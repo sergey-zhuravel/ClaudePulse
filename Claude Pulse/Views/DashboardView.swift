@@ -375,9 +375,10 @@ struct DashboardView: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(dataProvider.isFetching ? .tertiary : .secondary)
+            .focusable(false)
             .help("Refresh")
             .disabled(dataProvider.isFetching)
-            
+
             Button {
                 onCheckForUpdates()
             } label: {
@@ -387,7 +388,7 @@ struct DashboardView: View {
             .foregroundStyle(.secondary)
             .focusable(false)
             .help("Check for Updates")
-            
+
             Button {
                 NSApplication.shared.terminate(nil)
             } label: {
@@ -395,6 +396,7 @@ struct DashboardView: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
+            .focusable(false)
             .help("Quit Claude Pulse")
         }
         .padding(.horizontal, 14)

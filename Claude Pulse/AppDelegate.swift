@@ -10,6 +10,7 @@ import SwiftUI
 import Combine
 import UserNotifications
 import Sparkle
+import WebKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     
@@ -189,7 +190,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(updateItem)
         
         menu.addItem(.separator())
-        
+
+        if !dataProvider.requiresAuth {
+            let logOutItem = NSMenuItem(
+                title: "Log Out",
+                action: #selector(performLogOut),
+                keyEquivalent: ""
+            )
+            logOutItem.target = self
+            menu.addItem(logOutItem)
+        }
+
         menu.addItem(NSMenuItem(
             title: "Quit",
             action: #selector(NSApplication.terminate(_:)),
@@ -216,6 +227,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openSignIn() {
         showAuthWindow()
+    }
+
+    @objc private func performLogOut() {
+        // Clear all website data (cookies, sessions) for claude.ai
+        let dataStore = WKWebsiteDataStore.default()
+        let allTypes = WKWebsiteDataStore.allWebsiteDataTypes()
+        dataStore.fetchDataRecords(ofTypes: allTypes) { records in
+            let claudeRecords = records.filter { $0.displayName.contains("claude") }
+            dataStore.removeData(ofTypes: allTypes, for: claudeRecords) { [weak self] in
+                DispatchQueue.main.async {
+                    self?.dataProvider.currentSnapshot = nil
+                    self?.dataProvider.requiresAuth = true
+                    self?.consumptionLog.removeAll()
+                    self?.refreshIcon(snapshot: nil)
+                }
+            }
+        }
     }
     
     // MARK: - Popover
