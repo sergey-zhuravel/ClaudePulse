@@ -1,0 +1,28 @@
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+docs/
+
+# macOS
+.DS_Store
+
+# Sparkle private key (stored in Keychain, never commit)
+*.private-key
+
+
+# Swift Package Manager
+#
+.build/
+**/.build/
+.spm-clones/
+.swiftpm/
+Packages/
+SourcePackages/
+Package.pins
+# Keep Package.resolved tracked in app repos for reproducible dependency graph.
+# Package.resolved
+
+.claude/
+CLAUDE.md
