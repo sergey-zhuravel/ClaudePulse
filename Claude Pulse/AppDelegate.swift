@@ -198,6 +198,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 keyEquivalent: ""
             )
             logOutItem.target = self
+            logOutItem.image = NSImage(systemSymbolName: "rectangle.portrait.and.arrow.right", accessibilityDescription: "Log Out")
             menu.addItem(logOutItem)
         }
 
