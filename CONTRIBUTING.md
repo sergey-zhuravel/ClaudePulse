@@ -1,117 +1,84 @@
-# Contributing to Claude Usage Tracker
+# Contributing to Claude Pulse
 
-First off, thank you for considering contributing to Claude Usage Tracker! 🎉
+Thank you for considering contributing to Claude Pulse!
 
-This document provides guidelines and information about contributing to this project. We welcome contributions of all kinds: bug reports, feature requests, documentation improvements, and code contributions.
+We welcome contributions of all kinds: bug reports, feature requests, documentation improvements, and code contributions.
 
 ## Table of Contents
 
 - [Code of Conduct](#code-of-conduct)
 - [Getting Started](#getting-started)
-  - [Prerequisites](#prerequisites)
-  - [Development Setup](#development-setup)
-  - [Project Structure](#project-structure)
 - [How to Contribute](#how-to-contribute)
-  - [Reporting Bugs](#reporting-bugs)
-  - [Suggesting Features](#suggesting-features)
-  - [Contributing Code](#contributing-code)
 - [Development Guidelines](#development-guidelines)
-  - [Code Style](#code-style)
-  - [Architecture](#architecture)
-  - [Commit Messages](#commit-messages)
-  - [Branch Naming](#branch-naming)
 - [Pull Request Process](#pull-request-process)
 - [Release Process](#release-process)
-- [Getting Help](#getting-help)
 
 ## Code of Conduct
 
-This project adheres to a code of conduct that all contributors are expected to follow. Please be respectful, inclusive, and considerate in all interactions.
+Please be respectful, inclusive, and considerate in all interactions.
 
-**Our Standards:**
 - Be welcoming and inclusive
 - Be respectful of differing viewpoints
 - Accept constructive criticism gracefully
 - Focus on what's best for the community
-- Show empathy towards other community members
 
 ## Getting Started
 
 ### Prerequisites
 
-Before you begin, ensure you have the following installed:
-
-- **macOS 14.0+** (Sonoma or later)
-- **Xcode 15.0+** (latest stable recommended)
-- **Git** for version control
-- **A Claude AI account** for testing (to obtain a session key)
+- **macOS 13.0+** (Ventura or later)
+- **Xcode 26.4+**
+- **Git**
+- **A Claude AI account** for testing
 
 ### Development Setup
 
 1. **Fork the repository**
-   
+
    Click the "Fork" button on GitHub to create your own copy.
 
 2. **Clone your fork**
    ```bash
-   git clone https://github.com/YOUR_USERNAME/Claude-Usage-Tracker.git
-   cd Claude-Usage-Tracker
+   git clone https://github.com/YOUR_USERNAME/ClaudePulse.git
+   cd ClaudePulse
    ```
 
 3. **Add upstream remote**
    ```bash
-   git remote add upstream https://github.com/hamed-elfayome/Claude-Usage-Tracker.git
+   git remote add upstream https://github.com/sergey-zhuravel/ClaudePulse.git
    ```
 
 4. **Open in Xcode**
    ```bash
-   open "Claude Usage.xcodeproj"
+   open "Claude Pulse.xcodeproj"
    ```
+   Xcode will automatically resolve the Sparkle SPM dependency.
 
 5. **Build and run**
-   - Select the "Claude Usage" scheme
-   - Press `⌘R` to build and run
+   - Select the "Claude Pulse" scheme
+   - Press `Cmd+R` to build and run
    - The app will appear in your menu bar
-
-6. **Configure for testing**
-   - Extract your session key from claude.ai (see README for instructions)
-   - The app will guide you through setup on first launch
 
 ### Project Structure
 
 ```
-Claude Usage/
-├── App/
-│   ├── AppDelegate.swift          # App lifecycle, notifications setup
-│   └── ClaudeUsageTrackerApp.swift # SwiftUI app entry point
-│
-├── MenuBar/
-│   ├── MenuBarManager.swift       # Status item, popover management
-│   └── PopoverContentView.swift   # Main UI for usage display
-│
+Claude Pulse/
+├── Claude_PulseApp.swift          # @main entry point, delegates to AppDelegate
+├── AppDelegate.swift              # Status bar, popover, polling timer, Sparkle updater
+├── Models/
+│   └── QuotaSnapshot.swift        # Data model: usage counts, reset dates, computed labels
+├── Services/
+│   ├── UsageDataProvider.swift    # Core service: WKWebView scraping + API interception
+│   └── AlertDispatcher.swift      # macOS notification dispatch on usage thresholds
 ├── Views/
-│   ├── SettingsView.swift         # Settings window with tabs
-│   └── SetupWizardView.swift      # First-run configuration
-│
-├── Shared/
-│   ├── Extensions/                # Date, UserDefaults extensions
-│   ├── Models/
-│   │   ├── ClaudeUsage.swift      # Usage data model
-│   │   └── ClaudeStatus.swift     # API status model
-│   ├── Services/
-│   │   ├── ClaudeAPIService.swift # API communication
-│   │   ├── ClaudeStatusService.swift
-│   │   ├── NotificationManager.swift
-│   │   └── StatuslineService.swift # Claude Code integration
-│   ├── Storage/
-│   │   └── DataStore.swift        # UserDefaults wrapper
-│   └── Utilities/
-│       ├── Constants.swift        # App-wide constants
-│       └── FormatterHelper.swift  # Formatting utilities
-│
-├── Assets.xcassets/               # Images, colors, icons
+│   ├── DashboardView.swift        # Main popover UI (header, bars, hints, footer)
+│   ├── RingGaugeView.swift        # Circular progress indicator with gradient arc
+│   └── HintCardView.swift         # Reusable tip card with copy-to-clipboard
+├── Modules/
+│   └── SignIn/
+│       └── AuthWindowController.swift  # NSWindowController for claude.ai login
 └── Resources/
-    └── Info.plist                 # App configuration
+    └── Assets.xcassets            # App icon, accent color, menu bar icon
 ```
 
 ## How to Contribute
@@ -119,154 +86,100 @@ Claude Usage/
 ### Reporting Bugs
 
 Before submitting a bug report:
-1. Check existing [issues](https://github.com/hamed-elfayome/Claude-Usage-Tracker/issues) to avoid duplicates
+1. Check existing [issues](https://github.com/sergey-zhuravel/ClaudePulse/issues) to avoid duplicates
 2. Ensure you're running the latest version
 
 **When reporting a bug, include:**
-- macOS version (e.g., macOS 14.2)
-- App version (found in Settings → About)
+- macOS version
+- App version
 - Steps to reproduce the issue
 - Expected behavior vs. actual behavior
 - Screenshots if applicable
-- Relevant Console.app logs (filter by "Claude Usage")
 
 ### Suggesting Features
 
-We love feature suggestions! Please:
-1. Check existing issues and discussions first
+1. Check existing issues first
 2. Describe the problem your feature would solve
 3. Explain your proposed solution
-4. Consider alternative approaches
 
 ### Contributing Code
 
 1. **Find or create an issue** for what you want to work on
 2. **Comment on the issue** to let others know you're working on it
-3. **Fork and create a branch** (see [Branch Naming](#branch-naming))
+3. **Fork and create a branch**
 4. **Make your changes** following our [guidelines](#development-guidelines)
-5. **Test thoroughly** on macOS 14.0+
+5. **Test thoroughly** on macOS 13.0+
 6. **Submit a pull request**
 
 ## Development Guidelines
 
 ### Code Style
 
-We follow [Swift API Design Guidelines](https://www.swift.org/documentation/api-design-guidelines/) and standard SwiftUI practices.
+We follow [Swift API Design Guidelines](https://www.swift.org/documentation/api-design-guidelines/).
 
 **Key conventions:**
 
 ```swift
-// MARK: - Use MARK comments to organize code sections
+// Use MARK comments to organize code sections
 // MARK: - Properties
-// MARK: - Initialization
-// MARK: - Public Methods
+// MARK: - Public API
 // MARK: - Private Methods
 
 // Use descriptive names
-func fetchUsageData() async throws -> ClaudeUsage  // ✅ Good
-func getData() async throws -> ClaudeUsage         // ❌ Avoid
-
-// Document public APIs
-/// Fetches the current usage data from Claude's API
-/// - Returns: A `ClaudeUsage` object with current session and weekly usage
-/// - Throws: `APIError` if the request fails
-func fetchUsageData() async throws -> ClaudeUsage
-
-// Use Swift's type inference where clear
-let usage = ClaudeUsage.empty    // ✅ Good
-let usage: ClaudeUsage = ClaudeUsage.empty  // ❌ Redundant
+func reloadData()         // Good
+func refresh()            // Too vague
 
 // Prefer structs for data models
-struct ClaudeUsage: Codable, Equatable { ... }
+struct QuotaSnapshot { ... }
 
-// Use enums for constants and configurations
-enum Constants {
-    static let sessionWindow: TimeInterval = 5 * 60 * 60
-}
-```
-
-**SwiftUI specific:**
-
-```swift
-// Extract complex views into separate structs
-struct SmartUsageCard: View {
-    let title: String
-    let percentage: Double
-    
-    var body: some View {
-        // Keep body focused and readable
-    }
-}
-
-// Use @State for local view state
-// Use @Published in ObservableObject for shared state
-// Use @Environment for system values
-
-// Prefer declarative modifiers over imperative code
-Text("Usage")
-    .font(.headline)
-    .foregroundColor(.primary)
+// Singletons use .instance pattern
+static let instance = UsageDataProvider()
 ```
 
 ### Architecture
 
-This project follows the **MVVM (Model-View-ViewModel)** pattern:
+- **Models** (`Models/`): Value types, computed properties, no side effects
+- **Services** (`Services/`): Singletons with `@Published` properties, Combine-based
+- **Views** (`Views/`): SwiftUI structs, driven by `@EnvironmentObject` or closures
+- **AppDelegate**: Coordinates services, manages status bar and popover
 
-- **Models** (`Shared/Models/`): Data structures, pure Swift
-- **Views** (`Views/`, `MenuBar/`): SwiftUI views, presentation only
-- **ViewModels/Managers** (`MenuBar/MenuBarManager.swift`): Business logic, state management
-- **Services** (`Shared/Services/`): API calls, system interactions
-
-**Guidelines:**
-- Keep views "dumb" - they should only display data
-- Put business logic in managers/services
-- Use dependency injection where possible
-- Prefer `async/await` over completion handlers
+**Key patterns:**
+- Services are `final class` with `private init()` and `.instance` singleton
+- Data flows via Combine: `UsageDataProvider.$currentSnapshot` → AppDelegate → Views
+- Web scraping uses JS injection (API interceptor + DOM fallback)
+- No third-party dependencies except Sparkle 2 for auto-updates
 
 ### Commit Messages
 
 We follow [Conventional Commits](https://www.conventionalcommits.org/):
 
 ```
-<type>(<scope>): <description>
-
-[optional body]
-
-[optional footer]
+<type>: <description>
 ```
 
 **Types:**
 - `feat`: New feature
 - `fix`: Bug fix
 - `docs`: Documentation only
-- `style`: Formatting, no code change
 - `refactor`: Code change that neither fixes a bug nor adds a feature
-- `perf`: Performance improvement
-- `test`: Adding or updating tests
 - `chore`: Build process, dependencies, etc.
 
 **Examples:**
 ```
-feat(api): add support for Opus weekly usage tracking
-
-fix(menubar): resolve icon not updating on appearance change
-
-docs(readme): add Claude Code statusline setup instructions
-
-refactor(services): extract notification logic to NotificationManager
+feat: add Sonnet-only usage tracking
+fix: show sign-in prompt when cookies are missing
+docs: update SECURITY.md for v1.1
+chore: bump version to 1.1
 ```
 
 ### Branch Naming
 
-Use descriptive branch names with prefixes:
-
 | Prefix | Use Case | Example |
 |--------|----------|---------|
-| `feat/` | New features | `feat/historical-data-chart` |
-| `fix/` | Bug fixes | `fix/session-reset-notification` |
-| `docs/` | Documentation | `docs/add-contributing-guide` |
-| `refactor/` | Code refactoring | `refactor/extract-api-service` |
-| `chore/` | Maintenance | `chore/update-dependencies` |
+| `feat/` | New features | `feat/opus-usage-tracking` |
+| `fix/` | Bug fixes | `fix/reset-label-not-showing` |
+| `docs/` | Documentation | `docs/update-readme` |
+| `chore/` | Maintenance | `chore/update-sparkle` |
 
 ## Pull Request Process
 
@@ -281,74 +194,35 @@ Use descriptive branch names with prefixes:
    git checkout -b feat/your-feature-name
    ```
 
-3. **Make your changes**
-   - Write clean, documented code
-   - Follow the style guidelines
-   - Test on macOS 14.0+
+3. **Make your changes and commit**
 
-4. **Commit your changes**
-   ```bash
-   git add .
-   git commit -m "feat(scope): description of changes"
-   ```
-
-5. **Push to your fork**
+4. **Push to your fork**
    ```bash
    git push origin feat/your-feature-name
    ```
 
-6. **Open a Pull Request**
+5. **Open a Pull Request**
    - Use a clear, descriptive title
    - Reference any related issues (`Closes #123`)
    - Describe what changes you made and why
    - Include screenshots for UI changes
-   - List any breaking changes
-
-7. **Code Review**
-   - Respond to feedback promptly
-   - Make requested changes
-   - Keep the PR focused - one feature/fix per PR
 
 **PR Checklist:**
 - [ ] Code follows project style guidelines
 - [ ] Self-reviewed my own code
-- [ ] Added comments for complex logic
-- [ ] Updated documentation if needed
-- [ ] Tested on macOS 14.0+
+- [ ] Tested on macOS 13.0+
 - [ ] No new warnings in Xcode
 - [ ] UI changes include screenshots
 
 ## Release Process
 
-Releases are automated via GitHub Actions. See [`.github/README.md`](.github/README.md) for technical details.
-
-**Quick reference:**
-
-```bash
-# 1. Bump MARKETING_VERSION in project.pbxproj
-# 2. Update CHANGELOG.md
-# 3. Commit and tag
-git commit -am "chore: bump version to X.Y.Z"
-git tag vX.Y.Z
-git push origin main --tags
-
-# 4. Workflow creates draft release with assets
-# 5. Review and publish at github.com/.../releases
-```
-
-## Getting Help
-
-- **Questions?** Open a [Discussion](https://github.com/hamed-elfayome/Claude-Usage-Tracker/discussions)
-- **Found a bug?** Open an [Issue](https://github.com/hamed-elfayome/Claude-Usage-Tracker/issues)
-- **Want to chat?** Reach out to maintainers
+1. Bump `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in Build Settings
+2. Build & Archive in Xcode → Export → Notarize
+3. Create DMG and sign with Sparkle's `sign_update`
+4. Update `appcast.xml` with new version, signature, and length
+5. Create GitHub Release with tag `vX.Y`, attach DMG
+6. Push updated `appcast.xml` to main
 
 ---
 
-## Recognition
-
-Contributors are recognized in:
-- The GitHub contributors graph
-- Release notes for significant contributions
-- README acknowledgments for major features
-
-Thank you for helping make Claude Usage Tracker better! 🙏
+Thank you for helping make Claude Pulse better!
