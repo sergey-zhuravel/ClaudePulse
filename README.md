@@ -5,7 +5,21 @@
 
 ## Overview
 A native macOS menu-bar app that displays Claude Code usage in real time
+<p align="center">
+<img width="400" alt="Demo Gif" src="https://github.com/user-attachments/assets/258c0956-baee-489e-af9d-9d63f7acb01a" />
+</p>
 
+## Features
+  - **Real-time usage tracking** — See your current session, weekly (all models), and Sonnet-only limits at a glance                                                                                            
+  - **Menu bar percentage** — Always-visible usage percentage right in your menu bar                                                                                                                          
+  - **Session reset countdown** — Know exactly when your limits reset                                                                                                                                           
+  - **Smart usage hints** — Context-aware tips that appear as you approach your limits                                                                                                                        
+  - **Auto-refresh** — Configurable polling interval (30s to 10m) keeps data fresh                                                                                                                              
+  - **One-click sign in** — Authenticate with your Claude account via built-in web view                                                                                                                         
+  - **Auto-updates** — Sparkle-powered updates with EdDSA signature verification                                                                                                                                
+  - **Right-click menu** — Quick access to usage info, refresh interval, update check, and log out                                                                                                              
+  - **Stale data warnings** — Visual indicator when data hasn't been refreshed recently                                                                                                                         
+  - **Lightweight** — Runs as a menu bar accessory with no Dock icon 
 ## Installation
 
 > **Requires macOS 13 Ventura or later.**
