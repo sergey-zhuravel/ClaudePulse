@@ -16,7 +16,8 @@ A native macOS menu-bar app that displays Claude Code usage in real time
 </div>
 
 ## Features
-  - **Real-time usage tracking** — See your current session, weekly (all models), and Sonnet-only limits at a glance                                                                                            
+  - **Real-time usage tracking** — See your current session, weekly (all models), and Sonnet-only limits at a glance
+  - **Smart Usage Notification** — Get notified before you hit your limits                                                                                          
   - **Menu bar percentage** — Always-visible usage percentage right in your menu bar                                                                                                                          
   - **Session reset countdown** — Know exactly when your limits reset                                                                                                                                           
   - **Smart usage hints** — Context-aware tips that appear as you approach your limits                                                                                                                        
