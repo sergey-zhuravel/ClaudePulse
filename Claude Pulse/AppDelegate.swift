@@ -11,6 +11,7 @@ import Combine
 import UserNotifications
 import Sparkle
 import WebKit
+import ServiceManagement
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     
@@ -162,6 +163,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         
         menu.addItem(.separator())
 
+        let launchAtLoginItem = NSMenuItem(
+            title: "Run on Startup",
+            action: #selector(toggleLaunchAtLogin(_:)),
+            keyEquivalent: ""
+        )
+        launchAtLoginItem.target = self
+        launchAtLoginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        menu.addItem(launchAtLoginItem)
+
+        menu.addItem(.separator())
+
         if !dataProvider.requiresAuth {
             let logOutItem = NSMenuItem(
                 title: "Log Out",
@@ -218,6 +230,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
+    @objc private func toggleLaunchAtLogin(_ sender: NSMenuItem) {
+        let service = SMAppService.mainApp
+        do {
+            if service.status == .enabled {
+                try service.unregister()
+            } else {
+                try service.register()
+            }
+        } catch {
+            NSLog("Launch at Login toggle failed: \(error.localizedDescription)")
+        }
+    }
+
     // MARK: - Popover
     
     private func configurePanel() {
