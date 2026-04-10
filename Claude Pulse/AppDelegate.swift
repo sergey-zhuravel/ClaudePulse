@@ -122,35 +122,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             signInItem.target = self
             menu.addItem(signInItem)
-        } else if let snapshot = dataProvider.currentSnapshot {
-            let pctStr = "\(Int(snapshot.overallFraction * 100))%"
-            let infoItem = NSMenuItem(
-                title: "\(snapshot.activeConsumed)/\(snapshot.activeCapacity)  (\(pctStr))",
-                action: nil,
-                keyEquivalent: ""
-            )
-            infoItem.isEnabled = false
-            menu.addItem(infoItem)
-
-            if snapshot.windowResetDate != nil {
-                let resetItem = NSMenuItem(
-                    title: "Resets in \(snapshot.resetCountdown)",
-                    action: nil,
-                    keyEquivalent: ""
-                )
-                resetItem.isEnabled = false
-                menu.addItem(resetItem)
-            }
-
-            if snapshot.isOutdated {
-                let staleItem = NSMenuItem(title: "⚠  Data may be stale", action: nil, keyEquivalent: "")
-                staleItem.isEnabled = false
-                menu.addItem(staleItem)
-            }
-        } else {
-            let emptyItem = NSMenuItem(title: "No data yet", action: nil, keyEquivalent: "")
-            emptyItem.isEnabled = false
-            menu.addItem(emptyItem)
         }
         
         menu.addItem(.separator())
