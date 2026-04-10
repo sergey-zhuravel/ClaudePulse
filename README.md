@@ -9,6 +9,12 @@ A native macOS menu-bar app that displays Claude Code usage in real time
 <img width="400" alt="Demo Gif" src="https://github.com/user-attachments/assets/258c0956-baee-489e-af9d-9d63f7acb01a" />
 </p>
 
+<div align="center">
+  
+### [Download Latest Release](https://github.com/sergey-zhuravel/ClaudePulse/releases/latest/download/ClaudePulse.dmg)
+
+</div>
+
 ## Features
   - **Real-time usage tracking** — See your current session, weekly (all models), and Sonnet-only limits at a glance                                                                                            
   - **Menu bar percentage** — Always-visible usage percentage right in your menu bar                                                                                                                          
