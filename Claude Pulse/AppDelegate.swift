@@ -272,8 +272,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if floatingPanel.isShown {
             floatingPanel.performClose(nil)
         } else if let button = statusBarItem.button {
-            let age = dataProvider.currentSnapshot.map { Date().timeIntervalSince($0.refreshedAt) } ?? 999
-            if age > 30 { dataProvider.reloadData() }
+            if !dataProvider.requiresAuth {
+                let age = dataProvider.currentSnapshot.map { Date().timeIntervalSince($0.refreshedAt) } ?? 999
+                if age > 30 { dataProvider.reloadData() }
+            }
             floatingPanel.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             floatingPanel.contentViewController?.view.window?.makeKey()
         }
@@ -334,10 +336,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.async {
                     self?.authController?.close()
                     self?.authController = nil
-                    // Immediately hide sign-in and show loading spinner
+                    // Immediately hide sign-in and start loading
                     self?.dataProvider.requiresAuth = false
-                    self?.dataProvider.isFetching = true
-                    self?.dataProvider.reloadData()
+                    self?.dataProvider.performInitialFetch()
                     NSApp.setActivationPolicy(.accessory)
                 }
             }

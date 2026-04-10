@@ -67,9 +67,10 @@ private let kDOMParserScript = """
     var r = {
         planType: 'Unknown', messagesUsed: -1, messagesLimit: -1,
         sessionUsed: -1, sessionLimit: -1,
-        resetDateStr: '', sessionResetStr: '', weeklyResetStr: '',
+        sonnetUsed: -1, sonnetLimit: -1,
+        resetDateStr: '', sessionResetStr: '', weeklyResetStr: '', sonnetResetStr: '',
         rateLimitStatus: 'Normal', needsLogin: false, source: 'dom',
-        rawText: ''
+        userEmail: '', rawText: ''
     };
     try {
         var url = window.location.href;
@@ -157,9 +158,16 @@ private let kDOMParserScript = """
             }
         }
 
-        // aria progressbars (multiple: first = session, last = period)
+        // aria progressbars: session (0), all models (1), sonnet only (2)
         var bars = Array.from(document.querySelectorAll('[role="progressbar"]'));
-        if (bars.length >= 2) {
+        if (bars.length >= 3) {
+            r.sessionUsed   = parseInt(bars[0].getAttribute('aria-valuenow')||'0');
+            r.sessionLimit  = parseInt(bars[0].getAttribute('aria-valuemax')||'0');
+            r.messagesUsed  = parseInt(bars[1].getAttribute('aria-valuenow')||'0');
+            r.messagesLimit = parseInt(bars[1].getAttribute('aria-valuemax')||'0');
+            r.sonnetUsed    = parseInt(bars[2].getAttribute('aria-valuenow')||'0');
+            r.sonnetLimit   = parseInt(bars[2].getAttribute('aria-valuemax')||'0');
+        } else if (bars.length >= 2) {
             r.sessionUsed  = parseInt(bars[0].getAttribute('aria-valuenow')||'0');
             r.sessionLimit = parseInt(bars[0].getAttribute('aria-valuemax')||'0');
             r.messagesUsed = parseInt(bars[bars.length-1].getAttribute('aria-valuenow')||'0');
@@ -169,18 +177,15 @@ private let kDOMParserScript = """
             r.messagesLimit= parseInt(bars[0].getAttribute('aria-valuemax')||'0');
         }
 
-        // Reset dates
-        // Collect ALL "Resets in X" occurrences — first = session, second = weekly
-        var allResets = Array.from(body.matchAll(/resets?\\s+in\\s+(\\d[^\\n]{2,30}?)(?=\\s*\\d{2,3}%|\\s*Last|$)/gi));
+        // Reset labels: collect ALL "Resets ..." occurrences in page order
+        // Format 1: "Resets in 3 hr 58 min" (relative)
+        // Format 2: "Resets Wed 10:59 AM" (absolute day+time)
+        var allResets = Array.from(body.matchAll(/Resets\\s+(in\\s+\\d+\\s+\\w+(?:\\s+\\d+\\s+\\w+)?|(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\\w*\\s+\\d{1,2}:\\d{2}\\s*(?:AM|PM))/g));
         if (allResets.length > 0) r.sessionResetStr = allResets[0][1].trim();
         if (allResets.length > 1) r.weeklyResetStr  = allResets[1][1].trim();
-        // Absolute day+time fallback: "Fri 10:00 AM", "Friday at 10:00 AM"
-        if (!r.weeklyResetStr) {
-            var dayPat = /(?:Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)\\s+(?:at\\s+)?\\d{1,2}:\\d{2}\\s*(?:AM|PM)/i;
-            var wr = body.match(dayPat);
-            if (wr) r.weeklyResetStr = wr[0].trim();
-        }
-        // "Resets on December 25"
+        if (allResets.length > 2) r.sonnetResetStr  = allResets[2][1].trim();
+
+        // Fallback reset date: "Resets on December 25"
         var rd = body.match(/resets?\\s+(?:on\\s+)?([A-Z][a-z]+\\s+\\d{1,2}(?:,?\\s*\\d{4})?)/i);
         if (rd) r.resetDateStr = rd[1].trim();
 
@@ -189,6 +194,46 @@ private let kDOMParserScript = """
 
     } catch(e) { r.error = e.toString(); }
     return JSON.stringify(r);
+})();
+"""
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Extracts email from /settings/account page
+// ─────────────────────────────────────────────────────────────────────────────
+private let kEmailClickJS = """
+(function() {
+    var btn = document.querySelector('[data-testid="user-menu-button"]');
+    if (!btn) return 'no-button';
+    // Dispatch pointer/mouse events to trigger React handlers
+    var events = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+    for (var i = 0; i < events.length; i++) {
+        btn.dispatchEvent(new PointerEvent(events[i], {bubbles: true, cancelable: true, view: window}));
+    }
+    return 'clicked';
+})();
+"""
+
+private let kEmailReadJS = """
+(function() {
+    var els = document.querySelectorAll('*');
+    for (var i = 0; i < els.length; i++) {
+        if (els[i].children.length === 0 && els[i].innerHTML) {
+            var m = els[i].innerHTML.match(/[\\w.+-]+@[\\w.-]+\\.[a-z]{2,}/);
+            if (m) return m[0];
+        }
+    }
+    return '';
+})();
+"""
+
+private let kEmailCloseJS = """
+(function() {
+    var btn = document.querySelector('[data-testid="user-menu-button"]');
+    if (!btn) return;
+    var events = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+    for (var i = 0; i < events.length; i++) {
+        btn.dispatchEvent(new PointerEvent(events[i], {bubbles: true, cancelable: true, view: window}));
+    }
 })();
 """
 
@@ -205,6 +250,7 @@ class UsageDataProvider: NSObject, ObservableObject {
     
     private var dataWebView: WKWebView!
     private(set) var authWebView: WKWebView?
+    private var authURLObservation: NSKeyValueObservation?
     
     private let targetURL = URL(string: "https://claude.ai/settings/usage")!
     
@@ -236,12 +282,23 @@ class UsageDataProvider: NSObject, ObservableObject {
     // MARK: - Public API
     
     func performInitialFetch() {
-        isFetching = true
-        dataWebView.load(URLRequest(url: targetURL))
+        // Check if we have claude.ai cookies before loading
+        WKWebsiteDataStore.default().httpCookieStore.getAllCookies { [weak self] cookies in
+            guard let self else { return }
+            let hasClaude = cookies.contains { $0.domain.contains("claude") }
+            DispatchQueue.main.async {
+                if hasClaude {
+                    self.isFetching = true
+                    self.dataWebView.load(URLRequest(url: self.targetURL))
+                } else {
+                    self.requiresAuth = true
+                }
+            }
+        }
     }
     
     func reloadData() {
-        guard !isFetching else { return }
+        guard !isFetching, !requiresAuth else { return }
         isFetching = true
         // Keep current snapshot visible during reload — only update on new data
         dataWebView.load(URLRequest(url: targetURL))
@@ -254,10 +311,58 @@ class UsageDataProvider: NSObject, ObservableObject {
         wv.navigationDelegate = self
         wv.customUserAgent = dataWebView.customUserAgent
         authWebView = wv
+
+        // Observe URL changes via KVO — catches client-side navigation (React router)
+        authURLObservation = wv.observe(\.url, options: .new) { [weak self] webView, _ in
+            guard let self, let url = webView.url?.absoluteString else { return }
+            if !url.contains("/login") && !url.contains("/auth") && url.contains("claude.ai") {
+                self.authURLObservation = nil
+                DispatchQueue.main.async { self.onAuthCompleted?() }
+            }
+        }
+
         wv.load(URLRequest(url: URL(string: "https://claude.ai/login")!))
         return wv
     }
     
+    // MARK: - Email extraction
+
+    private func fetchEmailIfNeeded() {
+        guard currentSnapshot?.userEmail.isEmpty ?? true else { return }
+
+        // Step 1: Click the user menu button to open popup
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            guard let self else { return }
+            self.dataWebView.evaluateJavaScript(kEmailClickJS) { _, _ in
+                // Step 2: Try reading email with retries
+                self.readEmailWithRetry(attemptsLeft: 5)
+            }
+        }
+    }
+
+    private func readEmailWithRetry(attemptsLeft: Int) {
+        guard attemptsLeft > 0 else {
+            dataWebView.evaluateJavaScript(kEmailCloseJS) { _, _ in }
+            return
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self else { return }
+            self.dataWebView.evaluateJavaScript(kEmailReadJS) { result, _ in
+                let email = result as? String ?? ""
+                if !email.isEmpty {
+                    self.dataWebView.evaluateJavaScript(kEmailCloseJS) { _, _ in
+                        DispatchQueue.main.async {
+                            self.currentSnapshot?.userEmail = email
+                        }
+                    }
+                } else {
+                    self.readEmailWithRetry(attemptsLeft: attemptsLeft - 1)
+                }
+            }
+        }
+    }
+
     // MARK: - DOM extraction (fallback)
     
     private func executeDOMParsing() {
@@ -347,13 +452,18 @@ class UsageDataProvider: NSObject, ObservableObject {
         let periodCapacity   = j["messagesLimit"]   as? Int    ?? 0
         let windowConsumed   = j["sessionUsed"]     as? Int    ?? 0
         let windowCapacity   = j["sessionLimit"]    as? Int    ?? 0
+        let sonnetConsumed   = j["sonnetUsed"]      as? Int    ?? 0
+        let sonnetCapacity   = j["sonnetLimit"]     as? Int    ?? 0
         let throttleStatus   = j["rateLimitStatus"]  as? String ?? "Normal"
         let resetDateStr     = j["resetDateStr"]     as? String ?? ""
         let sessionResetStr  = j["sessionResetStr"]  as? String ?? ""
         let weeklyResetStr   = j["weeklyResetStr"]   as? String ?? ""
-        
+        let sonnetResetStr   = j["sonnetResetStr"]   as? String ?? ""
+        let userEmail        = j["userEmail"]         as? String ?? ""
+
         var windowResetDate: Date?
         var periodResetDate: Date?
+        var sonnetResetDate: Date?
         
         // 1. Absolute date string: "resets on December 25" → billing-period / weekly reset
         if !resetDateStr.isEmpty {
@@ -371,14 +481,17 @@ class UsageDataProvider: NSObject, ObservableObject {
             }
         }
         
-        // 2. Relative duration string: "2 hours", "30 minutes" → session reset
+        // 2. Parse reset strings — each can be relative ("2 hr 30 min") or absolute ("Fri 10:00 AM")
         if !sessionResetStr.isEmpty {
             windowResetDate = resolveRelativeInterval(sessionResetStr)
         }
-        
-        // 3. Weekly reset as relative duration: "23 hr 14 min" → periodResetDate
+
         if !weeklyResetStr.isEmpty && periodResetDate == nil {
             periodResetDate = resolveRelativeInterval(weeklyResetStr)
+        }
+
+        if !sonnetResetStr.isEmpty {
+            sonnetResetDate = resolveRelativeInterval(sonnetResetStr)
         }
         
         _ = j["rawText"]
@@ -398,18 +511,33 @@ class UsageDataProvider: NSObject, ObservableObject {
             snapshot.windowConsumed  = windowConsumed
             snapshot.windowCapacity  = windowCapacity
         }
-        if let rd = windowResetDate, snapshot.windowResetDate == nil { snapshot.windowResetDate = rd }
+        if sonnetCapacity > 0 {
+            snapshot.sonnetConsumed = sonnetConsumed
+            snapshot.sonnetCapacity = sonnetCapacity
+        }
+        if let rd = windowResetDate { snapshot.windowResetDate = rd }
         if let wd = periodResetDate { snapshot.periodResetDate = wd; snapshot.periodResetText = "" }
-        // Only use raw text for absolute day+time formats (e.g. "Fri 10:00 AM")
-        // Relative durations ("23 hr 14 min") are converted to Date above — don't store as text
-        let looksAbsolute = weeklyResetStr.range(of: #"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)"#, options: .regularExpression) != nil
-        if !weeklyResetStr.isEmpty && looksAbsolute { snapshot.periodResetText = weeklyResetStr }
+        if let sd = sonnetResetDate { snapshot.sonnetResetDate = sd; snapshot.sonnetResetText = "" }
+        // Store raw text for absolute day+time formats (e.g. "Fri 10:00 AM")
+        // These couldn't be parsed to Date by resolveRelativeInterval
+        let isAbsolute = { (s: String) -> Bool in s.range(of: #"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)"#, options: .regularExpression) != nil }
+        if !sessionResetStr.isEmpty && windowResetDate == nil && isAbsolute(sessionResetStr) {
+            snapshot.windowResetText = sessionResetStr
+        }
+        if !weeklyResetStr.isEmpty && isAbsolute(weeklyResetStr) { snapshot.periodResetText = weeklyResetStr }
+        if !sonnetResetStr.isEmpty && isAbsolute(sonnetResetStr) { snapshot.sonnetResetText = sonnetResetStr }
+        if !userEmail.isEmpty { snapshot.userEmail = userEmail }
         snapshot.throttleStatus = throttleStatus
         snapshot.refreshedAt = Date()
         
         currentSnapshot = snapshot
         fetchError      = nil
         requiresAuth    = false
+
+        // Fetch email from account page if not yet known
+        if snapshot.userEmail.isEmpty {
+            fetchEmailIfNeeded()
+        }
     }
     
     // MARK: - Helpers

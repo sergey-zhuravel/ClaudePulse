@@ -15,7 +15,13 @@ struct QuotaSnapshot {
     var windowCapacity:   Int = 0   // current rate-limit window (from API interceptor)
     var windowResetDate:  Date?     // near-term reset (session window, from API)
     var periodResetDate:  Date?     // billing period / weekly reset (from DOM parsed date)
+    var windowResetText:  String = "" // raw reset string if absolute format
     var periodResetText:  String = "" // raw weekday+time string e.g. "Fri 10:00 AM"
+    var sonnetConsumed:   Int = 0   // sonnet-only weekly usage (from DOM)
+    var sonnetCapacity:   Int = 0   // sonnet-only weekly limit (from DOM)
+    var sonnetResetDate:  Date?     // sonnet-only reset date
+    var sonnetResetText:  String = ""
+    var userEmail:        String = ""
     var throttleStatus:   String
     var refreshedAt:      Date
     
@@ -43,6 +49,11 @@ struct QuotaSnapshot {
     var periodFraction: Double {
         guard periodCapacity > 0 else { return 0 }
         return min(1.0, Double(periodConsumed) / Double(periodCapacity))
+    }
+
+    var sonnetFraction: Double {
+        guard sonnetCapacity > 0 else { return 0 }
+        return min(1.0, Double(sonnetConsumed) / Double(sonnetCapacity))
     }
     
     var remainingMessages: Int { max(0, activeCapacity - activeConsumed) }
@@ -101,19 +112,31 @@ struct QuotaSnapshot {
     }
     
     var windowResetLabel: String? {
-        guard let date = windowResetDate else { return nil }
-        let secs = date.timeIntervalSince(Date())
-        guard secs > 60 else { return nil }
-        let totalMins = Int(secs / 60)
-        let h = totalMins / 60
-        let m = totalMins % 60
-        if h > 0 { return "Resets in \(h) hr \(m) min" }
-        return "Resets in \(m) min"
+        if let date = windowResetDate {
+            let secs = date.timeIntervalSince(Date())
+            if secs <= 0 { return "Resets soon" }
+            let totalMins = Int(secs / 60)
+            let h = totalMins / 60
+            let m = totalMins % 60
+            if h > 0 { return "Resets in \(h) hr \(m) min" }
+            if m > 0 { return "Resets in \(m) min" }
+            return "Resets in < 1 min"
+        }
+        if !windowResetText.isEmpty { return "Resets \(windowResetText)" }
+        return nil
     }
-    
+
     var periodResetLabel: String? {
         if !periodResetText.isEmpty { return "Resets \(periodResetText)" }
         guard let date = periodResetDate else { return nil }
+        let f = DateFormatter()
+        f.dateFormat = "EEE h:mm a"
+        return "Resets \(f.string(from: date))"
+    }
+
+    var sonnetResetLabel: String? {
+        if !sonnetResetText.isEmpty { return "Resets \(sonnetResetText)" }
+        guard let date = sonnetResetDate else { return nil }
         let f = DateFormatter()
         f.dateFormat = "EEE h:mm a"
         return "Resets \(f.string(from: date))"

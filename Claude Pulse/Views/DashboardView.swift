@@ -88,16 +88,11 @@ struct DashboardView: View {
     
     // MARK: - Main scrollable area
 
-    private var needsSignIn: Bool {
-        dataProvider.requiresAuth ||
-        (!dataProvider.isFetching && dataProvider.currentSnapshot == nil && dataProvider.fetchError == nil)
-    }
-
     private var mainContent: some View {
         VStack(spacing: 16) {
-            if needsSignIn {
+            if dataProvider.requiresAuth {
                 signInPrompt
-            } else if dataProvider.isFetching && dataProvider.currentSnapshot == nil {
+            } else if dataProvider.currentSnapshot == nil {
                 loadingPlaceholder
             } else if let msg = dataProvider.fetchError, dataProvider.currentSnapshot == nil {
                 failureView(msg)
@@ -237,7 +232,7 @@ struct DashboardView: View {
                             Text("Weekly limits")
                                 .font(.system(size: 12, weight: .semibold))
                                 .foregroundStyle(.secondary)
-                            
+
                             quotaBarRow(
                                 title: "All models",
                                 resetLabel: snapshot.periodResetLabel,
@@ -245,6 +240,16 @@ struct DashboardView: View {
                                 capacity: snapshot.periodCapacity,
                                 fraction: snapshot.periodFraction
                             )
+
+                            if snapshot.sonnetCapacity > 0 {
+                                quotaBarRow(
+                                    title: "Sonnet only",
+                                    resetLabel: snapshot.sonnetResetLabel,
+                                    consumed: snapshot.sonnetConsumed,
+                                    capacity: snapshot.sonnetCapacity,
+                                    fraction: snapshot.sonnetFraction
+                                )
+                            }
                         }
                     }
                 }
@@ -350,59 +355,70 @@ struct DashboardView: View {
     // MARK: - Footer
     
     private var footerSection: some View {
-        HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 1) {
-                if let snapshot = dataProvider.currentSnapshot {
-                    Text("Updated \(snapshot.refreshTimestamp)")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
-                } else {
-                    Text("Not yet updated")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 1) {
+                    if let snapshot = dataProvider.currentSnapshot {
+                        Text("Updated \(snapshot.refreshTimestamp)")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                    } else {
+                        Text("Not yet updated")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                    }
                 }
-                Text("Refreshes every \(pollingLabel)  ·  Right-click icon to change")
-                    .font(.system(size: 9))
-                    .foregroundStyle(Color.primary.opacity(0.25))
-            }
-            
-            Spacer()
-            
-            Button {
-                dataProvider.reloadData()
-            } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(dataProvider.isFetching ? .tertiary : .secondary)
-            .focusable(false)
-            .help("Refresh")
-            .disabled(dataProvider.isFetching)
 
-            Button {
-                onCheckForUpdates()
-            } label: {
-                Image(systemName: "arrow.down.circle")
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .focusable(false)
-            .help("Check for Updates")
+                Spacer()
 
-            Button {
-                NSApplication.shared.terminate(nil)
-            } label: {
-                Image(systemName: "power")
+                Button {
+                    dataProvider.reloadData()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(dataProvider.isFetching ? .tertiary : .secondary)
+                .focusable(false)
+                .help("Refresh")
+                .disabled(dataProvider.isFetching)
+
+                Button {
+                    onCheckForUpdates()
+                } label: {
+                    Image(systemName: "arrow.down.circle")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .focusable(false)
+                .help("Check for Updates")
+
+                Button {
+                    NSApplication.shared.terminate(nil)
+                } label: {
+                    Image(systemName: "power")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .focusable(false)
+                .help("Quit Claude Pulse")
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .focusable(false)
-            .help("Quit Claude Pulse")
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+
+            Text("Refreshes every \(pollingLabel)  ·  Right-click icon to change")
+                .font(.system(size: 9))
+                .foregroundStyle(Color.primary.opacity(0.25))
+                .frame(maxWidth: .infinity)
+                .padding(.bottom, 6)
+
+            if let email = dataProvider.currentSnapshot?.userEmail, !email.isEmpty {
+                Divider().opacity(0.4)
+                Text(email)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+            }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
     }
-    
-    // MARK: - Helpers
-    
 }
