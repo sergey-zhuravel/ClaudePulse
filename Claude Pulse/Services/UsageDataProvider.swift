@@ -247,11 +247,12 @@ class UsageDataProvider: NSObject, ObservableObject {
     @Published var fetchError: String?
     
     var onAuthCompleted: (() -> Void)?
-    
+
     private var dataWebView: WKWebView!
     private(set) var authWebView: WKWebView?
     private var authURLObservation: NSKeyValueObservation?
-    
+    private var fetchTimeoutWork: DispatchWorkItem?
+
     private let targetURL = URL(string: "https://claude.ai/settings/usage")!
     
     private override init() {
@@ -289,6 +290,7 @@ class UsageDataProvider: NSObject, ObservableObject {
             DispatchQueue.main.async {
                 if hasClaude {
                     self.isFetching = true
+                    self.scheduleFetchTimeout()
                     self.dataWebView.load(URLRequest(url: self.targetURL))
                 } else {
                     self.requiresAuth = true
@@ -296,12 +298,44 @@ class UsageDataProvider: NSObject, ObservableObject {
             }
         }
     }
-    
+
     func reloadData() {
         guard !isFetching, !requiresAuth else { return }
         isFetching = true
-        // Keep current snapshot visible during reload — only update on new data
+        scheduleFetchTimeout()
         dataWebView.load(URLRequest(url: targetURL))
+    }
+
+    /// Resets `isFetching` and retries once if no response arrives within 15 seconds.
+    private var fetchRetryCount = 0
+
+    private func scheduleFetchTimeout() {
+        fetchTimeoutWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.isFetching else { return }
+            self.dataWebView.stopLoading()
+            self.isFetching = false
+
+            if self.fetchRetryCount < 2 {
+                self.fetchRetryCount += 1
+                NSLog("[ClaudePulse] Fetch timeout — retry %d", self.fetchRetryCount)
+                self.isFetching = true
+                self.dataWebView.load(URLRequest(url: self.targetURL))
+                self.scheduleFetchTimeout()
+            } else {
+                NSLog("[ClaudePulse] Fetch timeout — giving up after retries")
+                self.fetchRetryCount = 0
+                self.fetchError = "Could not load usage data. Try refreshing manually."
+            }
+        }
+        fetchTimeoutWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: work)
+    }
+
+    private func cancelFetchTimeout() {
+        fetchTimeoutWork?.cancel()
+        fetchTimeoutWork = nil
+        fetchRetryCount = 0
     }
     
     func buildAuthWebView() -> WKWebView {
@@ -367,14 +401,23 @@ class UsageDataProvider: NSObject, ObservableObject {
     
     private func executeDOMParsing() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
-            self?.dataWebView.evaluateJavaScript(kDOMParserScript) { result, _ in
-                guard let self,
-                      let s = result as? String,
+            guard let self else { return }
+            self.dataWebView.evaluateJavaScript(kDOMParserScript) { [weak self] result, error in
+                guard let self else { return }
+                guard let s = result as? String,
                       let d = s.data(using: .utf8),
                       let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any]
-                else { return }
+                else {
+                    NSLog("[ClaudePulse] DOM parsing failed: %@", error?.localizedDescription ?? "nil result")
+                    DispatchQueue.main.async {
+                        self.isFetching = false
+                        self.cancelFetchTimeout()
+                    }
+                    return
+                }
                 DispatchQueue.main.async {
                     self.isFetching = false
+                    self.cancelFetchTimeout()
                     self.processDOMPayload(j)
                 }
             }
@@ -438,6 +481,7 @@ class UsageDataProvider: NSObject, ObservableObject {
                 snapshot.refreshedAt    = Date()
                 self.currentSnapshot  = snapshot
                 self.isFetching       = false
+                self.cancelFetchTimeout()
                 self.requiresAuth     = false
             }
             return
@@ -618,13 +662,21 @@ extension UsageDataProvider: WKNavigationDelegate {
         let s = url.absoluteString
         
         if webView === dataWebView {
+            NSLog("[ClaudePulse] didFinish URL: %@", s)
             if s.contains("/login") || s.contains("/auth") || s.contains("?next=") {
-                DispatchQueue.main.async { self.isFetching = false; self.requiresAuth = true; self.currentSnapshot = nil }
+                DispatchQueue.main.async { self.isFetching = false; self.cancelFetchTimeout(); self.requiresAuth = true; self.currentSnapshot = nil }
             } else if s.contains("settings/usage") {
                 executeDOMParsing()
             } else if s.contains("claude.ai") {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                     self.dataWebView.load(URLRequest(url: self.targetURL))
+                }
+            } else {
+                // Unexpected URL — don't leave isFetching stuck
+                NSLog("[ClaudePulse] Unexpected URL after navigation: %@", s)
+                DispatchQueue.main.async {
+                    self.isFetching = false
+                    self.cancelFetchTimeout()
                 }
             }
         } else if webView === authWebView {
@@ -636,13 +688,13 @@ extension UsageDataProvider: WKNavigationDelegate {
     
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         if webView === dataWebView {
-            DispatchQueue.main.async { self.isFetching = false; self.fetchError = error.localizedDescription }
+            DispatchQueue.main.async { self.isFetching = false; self.cancelFetchTimeout(); self.fetchError = error.localizedDescription }
         }
     }
-    
+
     func webView(_ webView: WKWebView, didFailProvisionalNavigation nav: WKNavigation!, withError error: Error) {
         if webView === dataWebView {
-            DispatchQueue.main.async { self.isFetching = false; self.fetchError = error.localizedDescription }
+            DispatchQueue.main.async { self.isFetching = false; self.cancelFetchTimeout(); self.fetchError = error.localizedDescription }
         }
     }
 }
