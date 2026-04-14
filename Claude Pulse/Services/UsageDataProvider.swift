@@ -369,11 +369,13 @@ class UsageDataProvider: NSObject, ObservableObject {
 
         switch activeDataSource {
         case .cliAPI(_, let plan):
-            // Respect backoff or minimum interval
-            let minWait = max(Self.cliMinInterval, cliBackoffSeconds)
-            if let last = lastCLIFetchDate,
-               Date().timeIntervalSince(last) < minWait {
-                return
+            // Automatic polling respects throttle; manual refresh skips it
+            if !manualRefresh {
+                let minWait = max(Self.cliMinInterval, cliBackoffSeconds)
+                if let last = lastCLIFetchDate,
+                   Date().timeIntervalSince(last) < minWait {
+                    return
+                }
             }
             // Re-read token from credentials in case Claude Code refreshed it
             guard let json = try? CLICredentialsReader.shared.readCredentials(),
@@ -669,17 +671,17 @@ class UsageDataProvider: NSObject, ObservableObject {
     private func convertToSnapshot(usage: ClaudeUsage, planName: String) -> QuotaSnapshot {
         var snapshot = QuotaSnapshot(
             planName: planName,
-            periodConsumed: Int(usage.weeklyPercentage),
+            periodConsumed: Int(usage.weeklyPercentage.rounded()),
             periodCapacity: 100,
             windowResetDate: usage.sessionResetTime,
             throttleStatus: "Normal",
             refreshedAt: Date()
         )
-        snapshot.windowConsumed = Int(usage.effectiveSessionPercentage)
+        snapshot.windowConsumed = Int(usage.effectiveSessionPercentage.rounded())
         snapshot.windowCapacity = 100
         snapshot.periodResetDate = usage.weeklyResetTime
         if usage.sonnetPercentage > 0 || usage.sonnetResetTime != nil {
-            snapshot.sonnetConsumed = Int(usage.sonnetPercentage)
+            snapshot.sonnetConsumed = Int(usage.sonnetPercentage.rounded())
             snapshot.sonnetCapacity = 100
             snapshot.sonnetResetDate = usage.sonnetResetTime
         }
