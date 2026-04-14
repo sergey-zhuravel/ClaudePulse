@@ -6,6 +6,18 @@
         <description>Claude Pulse update feed</description>
         <language>en</language>
         <item>
+            <title>Version 1.3</title>
+            <sparkle:version>5</sparkle:version>
+            <sparkle:shortVersionString>1.3</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <enclosure
+                url="https://github.com/sergey-zhuravel/ClaudePulse/releases/download/v1.3/ClaudePulse.dmg"
+                sparkle:edSignature="e90wsOCkCGP/sI8fkjB+Y3FjCdsXd/aLL4yDpLmNYqSO34vgSBLN1z4F+uoxXqxfm1ZRs30EP9vlZb8/Nr1YCQ=="
+                length="3319352"
+                type="application/octet-stream"
+            />
+        </item>
+        <item>
             <title>Version 1.2</title>
             <sparkle:version>3</sparkle:version>
             <sparkle:shortVersionString>1.2</sparkle:shortVersionString>
