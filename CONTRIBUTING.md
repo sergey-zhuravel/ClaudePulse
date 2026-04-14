@@ -66,9 +66,12 @@ Claude Pulse/
 ├── Claude_PulseApp.swift          # @main entry point, delegates to AppDelegate
 ├── AppDelegate.swift              # Status bar, popover, polling timer, Sparkle updater
 ├── Models/
-│   └── QuotaSnapshot.swift        # Data model: usage counts, reset dates, computed labels
+│   ├── QuotaSnapshot.swift        # Data model: usage counts, reset dates, computed labels
+│   └── ClaudeUsage.swift          # Usage data model for CLI API responses
 ├── Services/
-│   ├── UsageDataProvider.swift    # Core service: WKWebView scraping + API interception
+│   ├── UsageDataProvider.swift    # Core service: CLI API + WKWebView scraping
+│   ├── CLICredentialsReader.swift # Reads OAuth token from Claude Code CLI (file/Keychain)
+│   ├── ClaudeUsageFetcher.swift   # Fetches usage via Anthropic OAuth API
 │   └── AlertDispatcher.swift      # macOS notification dispatch on usage thresholds
 ├── Views/
 │   ├── DashboardView.swift        # Main popover UI (header, bars, hints, footer)
@@ -144,9 +147,10 @@ static let instance = UsageDataProvider()
 - **AppDelegate**: Coordinates services, manages status bar and popover
 
 **Key patterns:**
-- Services are `final class` with `private init()` and `.instance` singleton
+- Services are `final class` with `private init()` and `.instance` or `.shared` singleton
 - Data flows via Combine: `UsageDataProvider.$currentSnapshot` → AppDelegate → Views
-- Web scraping uses JS injection (API interceptor + DOM fallback)
+- Two data sources: **CLI API** (OAuth token from Claude Code CLI → Anthropic API) and **WebView** (JS injection + DOM fallback)
+- CLI credentials are read from `~/.claude/.credentials.json` or macOS Keychain, token is validated server-side before use
 - No third-party dependencies except Sparkle 2 for auto-updates
 
 ### Commit Messages

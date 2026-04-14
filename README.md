@@ -22,7 +22,8 @@ A native macOS menu-bar app that displays Claude Code usage in real time
   - **Session reset countdown** — Know exactly when your limits reset                                                                                                                                           
   - **Smart usage hints** — Context-aware tips that appear as you approach your limits                                                                                                                        
   - **Auto-refresh** — Configurable polling interval (30s to 10m) keeps data fresh                                                                                                                              
-  - **One-click sign in** — Authenticate with your Claude account via built-in web view                                                                                                                         
+  - **Claude Code CLI login** — Automatically detects Claude Code CLI credentials for instant sign-in without a browser
+  - **Browser sign-in** — Alternatively, authenticate with your Claude account via built-in web view                                                                                                                         
   - **Auto-updates** — Sparkle-powered updates with EdDSA signature verification                                                                                                                                
   - **Right-click menu** — Quick access to usage info, refresh interval, update check, and log out                                                                                                              
   - **Stale data warnings** — Visual indicator when data hasn't been refreshed recently                                                                                                                         
@@ -42,19 +43,30 @@ Download the latest **ClaudePulse.dmg** from the [Releases page](https://github.
 
 ### Step 3 — Log in to Claude
 
-A browser window opens automatically on first run. Log in to your Claude Code account normally. The window closes by itself when login succeeds and the app icon appears in your menu bar.
+Claude Pulse supports two sign-in methods:
+
+**Option A — Claude Code CLI (recommended)**
+
+If you already use [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and have run `claude login`, the app detects your CLI credentials automatically on first launch — no browser needed. Usage data loads instantly via the Anthropic API.
+
+**Option B — Browser**
+
+If you don't use Claude Code CLI, a browser window opens on first launch. Log in to your Claude account normally. The window closes by itself when login succeeds.
+
+> If both options are available, you can choose your preferred method from the sign-in screen.
 
 ## How it works
 
-### Data source
+### Data sources
 
-The app embeds a hidden `WKWebView` that loads `claude.ai/settings/usage` using your stored browser session (via `WKWebsiteDataStore.default()` — the same cookie store Safari uses for WebKit-based apps).
+**CLI API mode** — When signed in via Claude Code CLI, the app reads your OAuth token and fetches usage data directly from the Anthropic API (`GET /api/oauth/usage`). The token is validated on each app launch to ensure it's still active. This mode provides session (5h), weekly (all models), and Sonnet-only utilization with exact reset times.
 
-A JavaScript **fetch/XHR interceptor** is injected at document start, before any page script runs. It captures every API response that mentions usage, limits, or quotas and forwards the raw JSON to Swift. This gives session-window data (e.g. the 5-hour rate-limit window) not visible in the page's DOM text. A DOM-text extraction pass runs 5 s after page load as a fallback.
+**WebView mode** — When signed in via browser, the app embeds a hidden `WKWebView` that loads `claude.ai/settings/usage` using your stored browser session (via `WKWebsiteDataStore.default()` — the same cookie store Safari uses for WebKit-based apps). A JavaScript **fetch/XHR interceptor** is injected at document start, before any page script runs. It captures every API response that mentions usage, limits, or quotas and forwards the raw JSON to Swift. A DOM-text extraction pass runs 5 s after page load as a fallback.
 
-### Cookie persistence
+### Cookie & credential persistence
 
-`WKWebsiteDataStore.default()` persists cookies to disk between app launches automatically — no manual Keychain work needed. If the session expires, the login window reappears.
+- **CLI mode:** OAuth credentials are managed by Claude Code CLI. Claude Pulse reads them but never modifies them.
+- **WebView mode:** `WKWebsiteDataStore.default()` persists cookies to disk between app launches automatically. If the session expires, the login window reappears.
 
 ## License
 

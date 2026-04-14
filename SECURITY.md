@@ -2,18 +2,27 @@
 
 ## How Claude Pulse Works
 
-Claude Pulse uses a hidden WKWebView to load `claude.ai/settings/usage` and extract usage data. It does **not** store, transmit, or share any of your data with third parties.
+Claude Pulse supports two authentication modes to fetch usage data. It does **not** store, transmit, or share any of your data with third parties.
+
+### Authentication modes
+
+**CLI API mode** — If you use Claude Code CLI (`claude login`), the app reads your existing OAuth token from `~/.claude/.credentials.json` or macOS Keychain. The token is validated against the Anthropic API before use. Usage data is fetched via `GET /api/oauth/usage`.
+
+**WebView mode** — A hidden `WKWebView` loads `claude.ai/settings/usage` using your stored browser session. A JavaScript interceptor captures API responses containing usage data.
 
 ### What the app accesses
 
-- **claude.ai cookies** — stored in the system's default `WKWebsiteDataStore`, used to authenticate with Claude. Never read or exported by the app.
-- **Usage data** — message counts, limits, reset times, and plan type are extracted from the Claude settings page and kept in memory only.
-- **Email address** — extracted from the Claude UI for display in the popover. Stored in memory only, never persisted to disk.
+- **Claude Code CLI credentials** (CLI mode) — OAuth token read. The token is kept in memory only and never written to disk by the app.
+- **`~/.claude.json`** (CLI mode) — Read-only access to extract the account email address for display. No data is modified.
+- **claude.ai cookies** (WebView mode) — stored in the system's default `WKWebsiteDataStore`, used to authenticate with Claude. Never read or exported by the app.
+- **Usage data** — utilization percentages, limits, reset times, and plan type. Kept in memory only.
+- **Email address** — extracted from `~/.claude.json` (CLI mode) or the Claude UI (WebView mode). Stored in memory only, never persisted to disk.
 
 ### What the app does NOT do
 
-- Does not store credentials or tokens
-- Does not send data to any server other than `claude.ai` and GitHub (for update checks)
+- Does not store or persist credentials or tokens to disk
+- Does not modify CLI credentials, Keychain entries, or any Claude Code configuration files
+- Does not send data to any server other than `api.anthropic.com`, `claude.ai`, and GitHub (for update checks)
 - Does not log or persist usage data to disk
 - Does not access any Claude conversations or message content
 - Does not modify any data on claude.ai
@@ -22,7 +31,8 @@ Claude Pulse uses a hidden WKWebView to load `claude.ai/settings/usage` and extr
 
 | Destination | Purpose |
 |-------------|---------|
-| `claude.ai` | Load usage settings page, authenticate |
+| `api.anthropic.com` | Fetch usage data via OAuth API (CLI mode) |
+| `claude.ai` | Load usage settings page, authenticate (WebView mode) |
 | `raw.githubusercontent.com` | Check for app updates (Sparkle appcast) |
 | `github.com` | Download app updates (DMG from releases) |
 

@@ -32,11 +32,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pollingInterval: TimeInterval {
         get {
             let stored = UserDefaults.standard.double(forKey: "refreshInterval")
-            return stored > 0 ? stored : 120
+            let base = stored > 0 ? stored : 300
+            // CLI mode: enforce minimum 5 minutes
+            if dataProvider.activeDataSourceType == .cliAPI {
+                return max(base, 300)
+            }
+            return base
         }
         set {
             UserDefaults.standard.set(newValue, forKey: "refreshInterval")
             reschedulePolling()
+            updatePollingLabel()
         }
     }
     
@@ -61,6 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configurePanel()
         bindDataProvider()
         launchDataFetch()
+        updatePollingLabel()
     }
     
     // MARK: - Status bar
@@ -116,13 +123,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         
         // Current usage info or sign-in
         if dataProvider.requiresAuth {
-            let signInItem = NSMenuItem(
-                title: "Sign In to Claude...",
-                action: #selector(openSignIn),
-                keyEquivalent: ""
-            )
-            signInItem.target = self
-            menu.addItem(signInItem)
+            if dataProvider.cliAvailable {
+                let signInItem = NSMenuItem(title: "Sign In", action: nil, keyEquivalent: "")
+                let signInSubmenu = NSMenu()
+
+                let cliItem = NSMenuItem(
+                    title: "Via Claude Code CLI",
+                    action: #selector(signInViaCLI),
+                    keyEquivalent: ""
+                )
+                cliItem.target = self
+                cliItem.image = NSImage(systemSymbolName: "terminal", accessibilityDescription: "CLI")
+                signInSubmenu.addItem(cliItem)
+
+                let browserItem = NSMenuItem(
+                    title: "Via Browser (claude.ai)",
+                    action: #selector(signInViaWebView),
+                    keyEquivalent: ""
+                )
+                browserItem.target = self
+                browserItem.image = NSImage(systemSymbolName: "globe", accessibilityDescription: "Browser")
+                signInSubmenu.addItem(browserItem)
+
+                signInItem.submenu = signInSubmenu
+                menu.addItem(signInItem)
+            } else {
+                let signInItem = NSMenuItem(
+                    title: "Sign In to Claude...",
+                    action: #selector(signInViaWebView),
+                    keyEquivalent: ""
+                )
+                signInItem.target = self
+                menu.addItem(signInItem)
+            }
         }
         
         menu.addItem(.separator())
@@ -130,13 +163,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Refresh interval submenu
         let intervalItem = NSMenuItem(title: "Refresh Interval", action: nil, keyEquivalent: "")
         let intervalSubmenu = NSMenu()
-        let choices: [(String, TimeInterval)] = [
-            ("30 seconds", 30),
-            ("1 minute",   60),
-            ("2 minutes",  120),
-            ("5 minutes",  300),
-            ("10 minutes", 600),
-        ]
+        let isCLI = dataProvider.activeDataSourceType == .cliAPI
+
+        let choices: [(String, TimeInterval)] = isCLI
+            ? [("5 minutes",  300),
+               ("10 minutes", 600),
+               ("15 minutes", 900)]
+            : [("30 seconds", 30),
+               ("1 minute",   60),
+               ("2 minutes",  120),
+               ("5 minutes",  300),
+               ("10 minutes", 600),
+               ("15 minutes", 900)]
         for (label, interval) in choices {
             let item = NSMenuItem(title: label, action: #selector(applyPollingInterval(_:)), keyEquivalent: "")
             item.target = self
@@ -196,20 +234,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.popUp(positioning: nil, at: origin, in: button)
     }
     
+    private func updatePollingLabel() {
+        let secs = pollingInterval
+        if secs < 60 {
+            dataProvider.pollingIntervalLabel = "\(Int(secs))s"
+        } else {
+            dataProvider.pollingIntervalLabel = "\(Int(secs / 60))m"
+        }
+    }
+
     @objc private func applyPollingInterval(_ sender: NSMenuItem) {
         guard let interval = sender.representedObject as? TimeInterval else { return }
         pollingInterval = interval
     }
     
     @objc private func triggerRefresh() {
-        dataProvider.reloadData()
+        dataProvider.reloadData(manualRefresh: true)
     }
     
     @objc private func invokeUpdateCheck() {
         updaterController.checkForUpdates(nil)
     }
 
-    @objc private func openSignIn() {
+    @objc private func signInViaCLI() {
+        // Close auth window if it was opened previously
+        if authController != nil {
+            authController?.close()
+            authController = nil
+            NSApp.setActivationPolicy(.accessory)
+        }
+        dataProvider.signInViaCLI()
+    }
+
+    @objc private func signInViaWebView() {
+        dataProvider.signInViaWebView()
         showAuthWindow()
     }
 
@@ -221,8 +279,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let claudeRecords = records.filter { $0.displayName.contains("claude") }
             dataStore.removeData(ofTypes: allTypes, for: claudeRecords) { [weak self] in
                 DispatchQueue.main.async {
-                    self?.dataProvider.currentSnapshot = nil
-                    self?.dataProvider.requiresAuth = true
+                    self?.dataProvider.logOut()
+                    self?.dataProvider.refreshCLIAvailability()
                     self?.consumptionLog.removeAll()
                     self?.refreshIcon(snapshot: nil)
                 }
@@ -251,26 +309,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.updaterController.checkForUpdates(nil)
             },
             onSignIn: { [weak self] in
+                self?.dataProvider.signInViaWebView()
                 self?.showAuthWindow()
+            },
+            onSignInViaCLI: { [weak self] in
+                self?.dataProvider.signInViaCLI()
             }
         ).environmentObject(dataProvider)
         let hostingController = NSHostingController(rootView: rootView)
         hostingController.view.wantsLayer = true
         
         floatingPanel = NSPopover()
-        floatingPanel.contentSize           = NSSize(width: 320, height: 380)
+        floatingPanel.contentSize           = NSSize(width: 320, height: 360)
         floatingPanel.behavior              = .transient
         floatingPanel.animates              = true
         floatingPanel.contentViewController = hostingController
     }
     
+    private func updatePanelSize(snapshot: QuotaSnapshot) {
+        let hasSonnet = snapshot.sonnetCapacity > 0
+        floatingPanel.contentSize = NSSize(width: 320, height: hasSonnet ? 380 : 360)
+    }
+
     private func togglePanel() {
         if floatingPanel.isShown {
             floatingPanel.performClose(nil)
         } else if let button = statusBarItem.button {
             if !dataProvider.requiresAuth {
                 let age = dataProvider.currentSnapshot.map { Date().timeIntervalSince($0.refreshedAt) } ?? 999
-                if age > 30 { dataProvider.reloadData() }
+                if age > 30 { dataProvider.reloadData(manualRefresh: true) }
             }
             floatingPanel.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             floatingPanel.contentViewController?.view.window?.makeKey()
@@ -300,6 +367,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 var enriched = snapshot
                 enriched.consumptionHistory = self.consumptionLog
                 self.refreshIcon(snapshot: enriched)
+                self.updatePanelSize(snapshot: enriched)
                 self.alertEngine.evaluateAndDispatch(snapshot: enriched)
             }
             .store(in: &subscriptions)
@@ -332,9 +400,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.async {
                     self?.authController?.close()
                     self?.authController = nil
-                    // Immediately hide sign-in and start loading
+                    // Immediately hide sign-in and start loading via WebView
                     self?.dataProvider.requiresAuth = false
-                    self?.dataProvider.performInitialFetch()
+                    self?.dataProvider.reloadData()
                     NSApp.setActivationPolicy(.accessory)
                 }
             }

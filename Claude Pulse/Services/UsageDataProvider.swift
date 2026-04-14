@@ -240,21 +240,43 @@ private let kEmailCloseJS = """
 // ─────────────────────────────────────────────────────────────────────────────
 class UsageDataProvider: NSObject, ObservableObject {
     static let instance = UsageDataProvider()
-    
+
     @Published var currentSnapshot: QuotaSnapshot?
     @Published var isFetching   = false
     @Published var requiresAuth = false
     @Published var fetchError: String?
-    
+    @Published var cliAvailable = false
+    @Published var pollingIntervalLabel: String = ""
+
     var onAuthCompleted: (() -> Void)?
 
+    enum DataSourceType: Equatable {
+        case cliAPI
+        case webView
+    }
+
+    private enum DataSource {
+        case cliAPI(accessToken: String, planName: String)
+        case webView
+    }
+
+    private var activeDataSource: DataSource?
+
+    /// Current data source type for UI decisions (e.g. polling interval choices).
+    var activeDataSourceType: DataSourceType? {
+        switch activeDataSource {
+        case .cliAPI: return .cliAPI
+        case .webView: return .webView
+        case .none: return nil
+        }
+    }
     private var dataWebView: WKWebView!
     private(set) var authWebView: WKWebView?
     private var authURLObservation: NSKeyValueObservation?
     private var fetchTimeoutWork: DispatchWorkItem?
 
     private let targetURL = URL(string: "https://claude.ai/settings/usage")!
-    
+
     private override init() {
         super.init()
         configureDataWebView()
@@ -283,7 +305,352 @@ class UsageDataProvider: NSObject, ObservableObject {
     // MARK: - Public API
     
     func performInitialFetch() {
-        // Check if we have claude.ai cookies before loading
+        let didLogOut = UserDefaults.standard.bool(forKey: "didExplicitlyLogOut")
+        let lastSource = UserDefaults.standard.string(forKey: "lastAuthSource")
+
+        // Only auto-login via CLI if user hasn't logged out AND last session wasn't browser
+        guard !didLogOut, lastSource != "webView",
+              let json = try? CLICredentialsReader.shared.readCredentials(),
+              !CLICredentialsReader.shared.isTokenExpired(json),
+              let token = CLICredentialsReader.shared.extractAccessToken(from: json)
+        else {
+            // No local credentials or logged out — go straight to WebView
+            cliAvailable = false
+            activeDataSource = .webView
+            performWebViewFetch()
+            return
+        }
+
+        // Show cached data immediately while we validate + fetch fresh data
+        if let cached = loadCLICache() {
+            currentSnapshot = cached
+        }
+
+        // Credentials exist locally — validate token with API before using it
+        isFetching = true
+        Task {
+            let valid = await ClaudeUsageFetcher.shared.validateToken(accessToken: token)
+            await MainActor.run {
+                self.cliAvailable = valid
+                if valid {
+                    let plan = CLICredentialsReader.shared.extractSubscriptionType(from: json)?.capitalized ?? "Pro"
+                    self.activeDataSource = .cliAPI(accessToken: token, planName: plan)
+                    UserDefaults.standard.set("cliAPI", forKey: "lastAuthSource")
+                    NSLog("[ClaudePulse] CLI token validated, fetching via API")
+                    Task { await self.fetchUsageViaCLI(accessToken: token, planName: plan) }
+                } else {
+                    NSLog("[ClaudePulse] CLI token invalid, falling back to WebView")
+                    self.isFetching = false
+                    self.activeDataSource = .webView
+                    self.performWebViewFetch()
+                }
+            }
+        }
+    }
+
+    /// Minimum interval between CLI API calls to avoid rate limiting.
+    private static let cliMinInterval: TimeInterval = 300
+    private var lastCLIFetchDate: Date?
+    private var credentialsWatchTimer: Timer?
+    private var lastKnownCredentialsMod: Date?
+    private var cliBackoffSeconds: TimeInterval = 0
+    private static let cliBackoffSteps: [TimeInterval] = [300, 600, 900] // 5m, 10m, 15m
+    private var nextEndpoint: ClaudeUsageFetcher.Endpoint = .oauthUsage
+    private var lastSonnetPercentage: Double = 0
+    private var lastSonnetResetTime: Date?
+    private var oauthCooldownUntil: Date?
+    private var oauthCooldownStep = 0
+    private static let oauthCooldownSteps: [TimeInterval] = [900, 1800, 2700, 3600] // 15m, 30m, 45m, 60m
+
+    /// - Parameter manualRefresh: true when triggered by user action (popover open, refresh button).
+    ///   Manual refreshes use messages endpoint only; oauth/usage is reserved for automatic polling.
+    func reloadData(manualRefresh: Bool = false) {
+        guard !isFetching, !requiresAuth else { return }
+
+        switch activeDataSource {
+        case .cliAPI(_, let plan):
+            // Respect backoff or minimum interval
+            let minWait = max(Self.cliMinInterval, cliBackoffSeconds)
+            if let last = lastCLIFetchDate,
+               Date().timeIntervalSince(last) < minWait {
+                return
+            }
+            // Re-read token from credentials in case Claude Code refreshed it
+            guard let json = try? CLICredentialsReader.shared.readCredentials(),
+                  let freshToken = CLICredentialsReader.shared.extractAccessToken(from: json)
+            else { return }
+            let freshPlan = CLICredentialsReader.shared.extractSubscriptionType(from: json)?.capitalized ?? plan
+            activeDataSource = .cliAPI(accessToken: freshToken, planName: freshPlan)
+            isFetching = true
+            lastCLIFetchDate = Date()
+            if manualRefresh {
+                // Manual refresh — always use messages to preserve oauth/usage rate budget
+                Task { await fetchUsageViaCLI(accessToken: freshToken, planName: freshPlan, forceEndpoint: .messagesHeaders) }
+            } else {
+                Task { await fetchUsageViaCLI(accessToken: freshToken, planName: freshPlan) }
+            }
+        case .webView, .none:
+            isFetching = true
+            scheduleFetchTimeout()
+            dataWebView.load(URLRequest(url: targetURL))
+        }
+    }
+
+    // MARK: - Public sign-in methods
+
+    /// Sign in using Claude Code CLI credentials with server-side validation.
+    func signInViaCLI() {
+        UserDefaults.standard.set(false, forKey: "didExplicitlyLogOut")
+        UserDefaults.standard.set("cliAPI", forKey: "lastAuthSource")
+
+        guard let json = try? CLICredentialsReader.shared.readCredentials(),
+              !CLICredentialsReader.shared.isTokenExpired(json),
+              let token = CLICredentialsReader.shared.extractAccessToken(from: json)
+        else {
+            fetchError = "Could not read CLI credentials. Run `claude login` first."
+            return
+        }
+
+        isFetching = true
+        Task {
+            let valid = await ClaudeUsageFetcher.shared.validateToken(accessToken: token)
+            await MainActor.run {
+                if valid {
+                    let plan = CLICredentialsReader.shared.extractSubscriptionType(from: json)?.capitalized ?? "Pro"
+                    self.activeDataSource = .cliAPI(accessToken: token, planName: plan)
+                    Task { await self.fetchUsageViaCLI(accessToken: token, planName: plan) }
+                } else {
+                    self.isFetching = false
+                    self.cliAvailable = false
+                    self.fetchError = "CLI token is no longer valid. Run `claude login` to refresh."
+                }
+            }
+        }
+    }
+
+    /// Sign in via browser (WebView). Call this then present the auth window.
+    func signInViaWebView() {
+        UserDefaults.standard.set(false, forKey: "didExplicitlyLogOut")
+        UserDefaults.standard.set("webView", forKey: "lastAuthSource")
+        activeDataSource = .webView
+    }
+
+    /// Log out — clears data, resets auth state, prevents CLI auto-login on next start.
+    func logOut() {
+        activeDataSource = nil
+        currentSnapshot = nil
+        requiresAuth = true
+        isFetching = false
+        cancelFetchTimeout()
+        stopCredentialsWatcher()
+        cliBackoffSeconds = 0
+        lastCLIFetchDate = nil
+        oauthCooldownStep = 0
+        oauthCooldownUntil = nil
+        UserDefaults.standard.removeObject(forKey: Self.cliCacheKey)
+        UserDefaults.standard.removeObject(forKey: "lastAuthSource")
+        UserDefaults.standard.set(true, forKey: "didExplicitlyLogOut")
+    }
+
+    /// Checks if CLI credentials exist and token is valid on the server.
+    func refreshCLIAvailability() {
+        do {
+            guard let json = try CLICredentialsReader.shared.readCredentials(),
+                  !CLICredentialsReader.shared.isTokenExpired(json),
+                  let token = CLICredentialsReader.shared.extractAccessToken(from: json)
+            else {
+                cliAvailable = false
+                return
+            }
+            // Async server-side validation
+            Task {
+                let valid = await ClaudeUsageFetcher.shared.validateToken(accessToken: token)
+                await MainActor.run { self.cliAvailable = valid }
+            }
+        } catch {
+            cliAvailable = false
+        }
+    }
+
+    // MARK: - CLI API
+
+    private func fetchUsageViaCLI(accessToken: String, planName: String, forceEndpoint: ClaudeUsageFetcher.Endpoint? = nil) async {
+        var endpoint: ClaudeUsageFetcher.Endpoint
+        if let forced = forceEndpoint {
+            endpoint = forced
+        } else {
+            // Use alternating endpoint, skip oauth/usage if on cooldown
+            endpoint = await MainActor.run { self.nextEndpoint }
+            let cooldown: Date? = await MainActor.run { self.oauthCooldownUntil }
+            if endpoint == .oauthUsage, let cd = cooldown, Date() < cd {
+                endpoint = .messagesHeaders
+            }
+        }
+
+        NSLog("[ClaudePulse] Fetching via %@", endpoint == .oauthUsage ? "oauth/usage" : "messages headers")
+
+        do {
+            var usage = try await ClaudeUsageFetcher.shared.fetchUsage(accessToken: accessToken, endpoint: endpoint)
+
+            await MainActor.run {
+                // Alternate endpoint for next call
+                self.nextEndpoint = (endpoint == .oauthUsage) ? .messagesHeaders : .oauthUsage
+
+                // Messages API doesn't return sonnet data — merge from last oauth/usage
+                if endpoint == .oauthUsage {
+                    self.lastSonnetPercentage = usage.sonnetPercentage
+                    self.lastSonnetResetTime = usage.sonnetResetTime
+                    self.oauthCooldownStep = 0
+                    self.oauthCooldownUntil = nil
+                } else if usage.sonnetPercentage == 0 {
+                    usage.sonnetPercentage = self.lastSonnetPercentage
+                    usage.sonnetResetTime = self.lastSonnetResetTime
+                }
+
+                self.currentSnapshot = self.convertToSnapshot(usage: usage, planName: planName)
+                self.isFetching = false
+                self.requiresAuth = false
+                self.fetchError = nil
+                self.cliBackoffSeconds = 0
+                self.stopCredentialsWatcher()
+                self.saveCLICache(usage: usage, planName: planName)
+            }
+        } catch let error as UsageFetchError {
+            if case .rateLimited = error {
+                if endpoint == .oauthUsage {
+                    // oauth/usage hit 429 — progressive cooldown, immediately try messages
+                    await MainActor.run {
+                        let step = min(self.oauthCooldownStep, Self.oauthCooldownSteps.count - 1)
+                        let cooldown = Self.oauthCooldownSteps[step]
+                        self.oauthCooldownUntil = Date().addingTimeInterval(cooldown)
+                        self.oauthCooldownStep += 1
+                        self.nextEndpoint = .messagesHeaders
+                        NSLog("[ClaudePulse] oauth/usage rate limited, cooldown %.0fm, falling back to messages", cooldown / 60)
+                    }
+                    await fetchUsageViaCLI(accessToken: accessToken, planName: planName)
+                } else {
+                    // Both endpoints exhausted — backoff
+                    await MainActor.run {
+                        self.isFetching = false
+                        let stepIndex = Self.cliBackoffSteps.firstIndex(where: { $0 > self.cliBackoffSeconds }) ?? (Self.cliBackoffSteps.count - 1)
+                        self.cliBackoffSeconds = Self.cliBackoffSteps[stepIndex]
+                        self.lastCLIFetchDate = Date()
+                        NSLog("[ClaudePulse] Both endpoints rate limited, next retry in %.0fs", self.cliBackoffSeconds)
+                        self.startCredentialsWatcher()
+                    }
+                }
+            } else {
+                NSLog("[ClaudePulse] CLI API fetch failed: %@", error.localizedDescription)
+                await MainActor.run {
+                    self.isFetching = false
+                    self.fetchError = error.localizedDescription
+                }
+            }
+        } catch {
+            NSLog("[ClaudePulse] CLI API fetch failed: %@", error.localizedDescription)
+            await MainActor.run {
+                self.isFetching = false
+                self.fetchError = error.localizedDescription
+            }
+        }
+    }
+
+    // MARK: - Credentials file watcher
+
+    /// Watches ~/.claude/.credentials.json for token refresh by Claude Code.
+    /// When the file changes, the new token resets rate limits.
+    private func startCredentialsWatcher() {
+        guard credentialsWatchTimer == nil else { return }
+        lastKnownCredentialsMod = credentialsFileModDate()
+        NSLog("[ClaudePulse] Started credentials watcher")
+        credentialsWatchTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let currentMod = self.credentialsFileModDate()
+            if let known = self.lastKnownCredentialsMod,
+               let current = currentMod,
+               current > known {
+                NSLog("[ClaudePulse] Credentials file changed — token refreshed, retrying")
+                self.lastKnownCredentialsMod = current
+                self.cliBackoffSeconds = 0
+                self.lastCLIFetchDate = nil
+                self.stopCredentialsWatcher()
+                // Re-read credentials and fetch with new token
+                if let json = try? CLICredentialsReader.shared.readCredentials(),
+                   let token = CLICredentialsReader.shared.extractAccessToken(from: json) {
+                    let plan = CLICredentialsReader.shared.extractSubscriptionType(from: json)?.capitalized ?? "Pro"
+                    self.activeDataSource = .cliAPI(accessToken: token, planName: plan)
+                    self.isFetching = true
+                    Task { await self.fetchUsageViaCLI(accessToken: token, planName: plan) }
+                }
+            } else {
+                self.lastKnownCredentialsMod = currentMod
+            }
+        }
+    }
+
+    private func stopCredentialsWatcher() {
+        credentialsWatchTimer?.invalidate()
+        credentialsWatchTimer = nil
+    }
+
+    private func credentialsFileModDate() -> Date? {
+        let home = ProcessInfo.processInfo.environment["HOME"].map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.homeDirectoryForCurrentUser
+        let paths = [
+            home.appendingPathComponent(".claude/.credentials.json"),
+            home.appendingPathComponent(".claude/credentials.json")
+        ]
+        for path in paths {
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: path.path),
+               let mod = attrs[.modificationDate] as? Date {
+                return mod
+            }
+        }
+        return nil
+    }
+
+    // MARK: - CLI response cache
+
+    private static let cliCacheKey = "cliUsageCache"
+
+    private func saveCLICache(usage: ClaudeUsage, planName: String) {
+        let cache: [String: Any] = [
+            "sessionPercentage": usage.sessionPercentage,
+            "sessionResetTime": usage.sessionResetTime.timeIntervalSince1970,
+            "weeklyPercentage": usage.weeklyPercentage,
+            "weeklyResetTime": usage.weeklyResetTime.timeIntervalSince1970,
+            "sonnetPercentage": usage.sonnetPercentage,
+            "sonnetResetTime": usage.sonnetResetTime?.timeIntervalSince1970 ?? 0,
+            "planName": planName,
+            "savedAt": Date().timeIntervalSince1970
+        ]
+        UserDefaults.standard.set(cache, forKey: Self.cliCacheKey)
+    }
+
+    /// Loads cached CLI usage if available and less than 1 hour old.
+    func loadCLICache() -> QuotaSnapshot? {
+        guard let cache = UserDefaults.standard.dictionary(forKey: Self.cliCacheKey),
+              let savedAt = cache["savedAt"] as? TimeInterval,
+              Date().timeIntervalSince1970 - savedAt < 3600 // 1 hour max
+        else { return nil }
+
+        let usage = ClaudeUsage(
+            sessionPercentage: cache["sessionPercentage"] as? Double ?? 0,
+            sessionResetTime: Date(timeIntervalSince1970: cache["sessionResetTime"] as? TimeInterval ?? 0),
+            weeklyPercentage: cache["weeklyPercentage"] as? Double ?? 0,
+            weeklyResetTime: Date(timeIntervalSince1970: cache["weeklyResetTime"] as? TimeInterval ?? 0),
+            sonnetPercentage: cache["sonnetPercentage"] as? Double ?? 0,
+            sonnetResetTime: {
+                let ts = cache["sonnetResetTime"] as? TimeInterval ?? 0
+                return ts > 0 ? Date(timeIntervalSince1970: ts) : nil
+            }(),
+            lastUpdated: Date(timeIntervalSince1970: savedAt)
+        )
+        let planName = cache["planName"] as? String ?? "Pro"
+        return convertToSnapshot(usage: usage, planName: planName)
+    }
+
+    private func performWebViewFetch() {
         WKWebsiteDataStore.default().httpCookieStore.getAllCookies { [weak self] cookies in
             guard let self else { return }
             let hasClaude = cookies.contains { $0.domain.contains("claude") }
@@ -299,11 +666,27 @@ class UsageDataProvider: NSObject, ObservableObject {
         }
     }
 
-    func reloadData() {
-        guard !isFetching, !requiresAuth else { return }
-        isFetching = true
-        scheduleFetchTimeout()
-        dataWebView.load(URLRequest(url: targetURL))
+    private func convertToSnapshot(usage: ClaudeUsage, planName: String) -> QuotaSnapshot {
+        var snapshot = QuotaSnapshot(
+            planName: planName,
+            periodConsumed: Int(usage.weeklyPercentage),
+            periodCapacity: 100,
+            windowResetDate: usage.sessionResetTime,
+            throttleStatus: "Normal",
+            refreshedAt: Date()
+        )
+        snapshot.windowConsumed = Int(usage.effectiveSessionPercentage)
+        snapshot.windowCapacity = 100
+        snapshot.periodResetDate = usage.weeklyResetTime
+        if usage.sonnetPercentage > 0 || usage.sonnetResetTime != nil {
+            snapshot.sonnetConsumed = Int(usage.sonnetPercentage)
+            snapshot.sonnetCapacity = 100
+            snapshot.sonnetResetDate = usage.sonnetResetTime
+        }
+        if let email = CLICredentialsReader.shared.readEmail() {
+            snapshot.userEmail = email
+        }
+        return snapshot
     }
 
     /// Resets `isFetching` and retries once if no response arrives within 15 seconds.

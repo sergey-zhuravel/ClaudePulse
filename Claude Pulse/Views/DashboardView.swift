@@ -12,13 +12,10 @@ struct DashboardView: View {
     
     var onCheckForUpdates: () -> Void = {}
     var onSignIn: () -> Void = {}
+    var onSignInViaCLI: () -> Void = {}
     
     private var pollingLabel: String {
-        let interval = UserDefaults.standard.double(forKey: "refreshInterval")
-        let secs = interval > 0 ? interval : 120
-        if secs < 60 { return "\(Int(secs))s" }
-        let mins = Int(secs / 60)
-        return "\(mins)m"
+        dataProvider.pollingIntervalLabel
     }
     
     var body: some View {
@@ -118,16 +115,52 @@ struct DashboardView: View {
             Text("Sign in to Claude")
                 .font(.system(size: 14, weight: .semibold))
 
-            Text("Log in to your Claude account to start tracking usage limits.")
+            Text("Log in to your Claude account\nto start tracking usage limits.")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
 
-            Button("Sign In") {
-                onSignIn()
+            if dataProvider.cliAvailable {
+                VStack(spacing: 8) {
+                    Button {
+                        onSignInViaCLI()
+                    } label: {
+                        HStack(spacing: 6) {
+                            if dataProvider.isFetching {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Image(systemName: "terminal")
+                            }
+                            Text("Sign In via CLI")
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
+                    .disabled(dataProvider.isFetching)
+
+                    Button {
+                        onSignIn()
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "globe")
+                            Text("Sign In via Browser")
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
+                    .disabled(dataProvider.isFetching)
+                }
+            } else {
+                Button("Sign In") {
+                    onSignIn()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.regular)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.regular)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 32)
@@ -144,10 +177,11 @@ struct DashboardView: View {
                 .font(.system(size: 11))
                 .foregroundStyle(.orange)
             Spacer()
-            Button("Refresh") { dataProvider.reloadData() }
+            Button("Refresh") { dataProvider.reloadData(manualRefresh: true) }
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.orange)
                 .buttonStyle(.plain)
+                .focusable(false)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
@@ -178,7 +212,7 @@ struct DashboardView: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            Button("Try Again") { dataProvider.reloadData() }
+            Button("Try Again") { dataProvider.reloadData(manualRefresh: true) }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
         }
@@ -372,7 +406,7 @@ struct DashboardView: View {
                 Spacer()
 
                 Button {
-                    dataProvider.reloadData()
+                    dataProvider.reloadData(manualRefresh: true)
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
@@ -381,16 +415,6 @@ struct DashboardView: View {
                 .focusable(false)
                 .help("Refresh")
                 .disabled(dataProvider.isFetching)
-
-                Button {
-                    onCheckForUpdates()
-                } label: {
-                    Image(systemName: "arrow.down.circle")
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .focusable(false)
-                .help("Check for Updates")
 
                 Button {
                     NSApplication.shared.terminate(nil)
@@ -409,7 +433,7 @@ struct DashboardView: View {
                 .font(.system(size: 9))
                 .foregroundStyle(Color.primary.opacity(0.25))
                 .frame(maxWidth: .infinity)
-                .padding(.bottom, 6)
+                .padding(.bottom, (dataProvider.currentSnapshot?.userEmail.isEmpty ?? true) ? 6 : 2)
 
             if let email = dataProvider.currentSnapshot?.userEmail, !email.isEmpty {
                 Divider().opacity(0.4)
