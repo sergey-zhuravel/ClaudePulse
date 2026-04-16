@@ -176,7 +176,8 @@ final class ClaudeUsageFetcher {
         }
 
         let sessionUtil = headerDouble("anthropic-ratelimit-unified-5h-utilization") ?? 0
-        var sessionPercentage = sessionUtil * 100.0
+        // ceil() to match oauth/usage which rounds up
+        var sessionPercentage = ceil(sessionUtil * 100.0)
         let sessionResetTs = headerDouble("anthropic-ratelimit-unified-5h-reset") ?? 0
         let sessionResetTime = sessionResetTs > 0
             ? Date(timeIntervalSince1970: sessionResetTs)
@@ -184,7 +185,7 @@ final class ClaudeUsageFetcher {
         if sessionResetTime < Date() { sessionPercentage = 0.0 }
 
         let weeklyUtil = headerDouble("anthropic-ratelimit-unified-7d-utilization") ?? 0
-        let weeklyPercentage = weeklyUtil * 100.0
+        let weeklyPercentage = ceil(weeklyUtil * 100.0)
         let weeklyResetTs = headerDouble("anthropic-ratelimit-unified-7d-reset") ?? 0
         let weeklyResetTime = weeklyResetTs > 0
             ? Date(timeIntervalSince1970: weeklyResetTs)

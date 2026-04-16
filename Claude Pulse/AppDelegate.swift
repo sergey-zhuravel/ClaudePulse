@@ -50,24 +50,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     
     override init() {
         self.updaterController = SPUStandardUpdaterController(
-            startingUpdater: true,
+            startingUpdater: false,
             updaterDelegate: nil,
             userDriverDelegate: nil
         )
         super.init()
     }
-    
+
     // MARK: - Application lifecycle
-    
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        
+
         alertEngine.authorizeAlerts()
         configureStatusBar()
         configurePanel()
         bindDataProvider()
         launchDataFetch()
         updatePollingLabel()
+
+        // Start Sparkle updater after UI is ready to avoid blocking first launch
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            try? self?.updaterController.updater.start()
+        }
     }
     
     // MARK: - Status bar
@@ -326,9 +331,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         floatingPanel.contentViewController = hostingController
     }
     
-    private func updatePanelSize(snapshot: QuotaSnapshot) {
-        let hasSonnet = snapshot.sonnetCapacity > 0
-        floatingPanel.contentSize = NSSize(width: 320, height: hasSonnet ? 380 : 360)
+    private func updatePanelSize(snapshot: QuotaSnapshot?) {
+        let hasSonnet = (snapshot?.sonnetCapacity ?? 0) > 0
+        let hasData = snapshot != nil
+        let height: CGFloat = hasData ? (hasSonnet ? 420 : 380) : 400
+        let size = NSSize(width: 320, height: height)
+        floatingPanel.contentSize = size
+        floatingPanel.contentViewController?.preferredContentSize = size
     }
 
     private func togglePanel() {
@@ -353,6 +362,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self else { return }
                 guard let snapshot = snapshot else {
                     self.refreshIcon(snapshot: nil)
+                    self.updatePanelSize(snapshot: nil)
                     return
                 }
                 // Detect session reset (pct dropped) → clear history

@@ -308,41 +308,55 @@ class UsageDataProvider: NSObject, ObservableObject {
         let didLogOut = UserDefaults.standard.bool(forKey: "didExplicitlyLogOut")
         let lastSource = UserDefaults.standard.string(forKey: "lastAuthSource")
 
-        // Only auto-login via CLI if user hasn't logged out AND last session wasn't browser
-        guard !didLogOut, lastSource != "webView",
-              let json = try? CLICredentialsReader.shared.readCredentials(),
-              !CLICredentialsReader.shared.isTokenExpired(json),
-              let token = CLICredentialsReader.shared.extractAccessToken(from: json)
-        else {
-            // No local credentials or logged out — go straight to WebView
-            cliAvailable = false
+        // Skip CLI auto-login if user explicitly logged out or last session was browser
+        if didLogOut || lastSource == "webView" {
             activeDataSource = .webView
+            // Still check CLI availability for the sign-in UI (async, won't block)
+            refreshCLIAvailability()
             performWebViewFetch()
             return
         }
 
-        // Show cached data immediately while we validate + fetch fresh data
+        // Show cached data immediately while credentials are read in background
         if let cached = loadCLICache() {
             currentSnapshot = cached
         }
 
-        // Credentials exist locally — validate token with API before using it
         isFetching = true
-        Task {
-            let valid = await ClaudeUsageFetcher.shared.validateToken(accessToken: token)
+
+        // Read credentials off the main thread — Process.waitUntilExit() blocks
+        Task.detached(priority: .userInitiated) {
+            let json = try? CLICredentialsReader.shared.readCredentials()
+            let token = json.flatMap { CLICredentialsReader.shared.extractAccessToken(from: $0) }
+            let expired = json.map { CLICredentialsReader.shared.isTokenExpired($0) } ?? true
+
             await MainActor.run {
-                self.cliAvailable = valid
-                if valid {
-                    let plan = CLICredentialsReader.shared.extractSubscriptionType(from: json)?.capitalized ?? "Pro"
-                    self.activeDataSource = .cliAPI(accessToken: token, planName: plan)
-                    UserDefaults.standard.set("cliAPI", forKey: "lastAuthSource")
-                    NSLog("[ClaudePulse] CLI token validated, fetching via API")
-                    Task { await self.fetchUsageViaCLI(accessToken: token, planName: plan) }
-                } else {
-                    NSLog("[ClaudePulse] CLI token invalid, falling back to WebView")
+                guard let json, let token, !expired else {
+                    self.cliAvailable = false
                     self.isFetching = false
                     self.activeDataSource = .webView
                     self.performWebViewFetch()
+                    return
+                }
+
+                // Validate token with API
+                Task {
+                    let valid = await ClaudeUsageFetcher.shared.validateToken(accessToken: token)
+                    await MainActor.run {
+                        self.cliAvailable = valid
+                        if valid {
+                            let plan = CLICredentialsReader.shared.extractSubscriptionType(from: json)?.capitalized ?? "Pro"
+                            self.activeDataSource = .cliAPI(accessToken: token, planName: plan)
+                            UserDefaults.standard.set("cliAPI", forKey: "lastAuthSource")
+                            NSLog("[ClaudePulse] CLI token validated, fetching via API")
+                            Task { await self.fetchUsageViaCLI(accessToken: token, planName: plan) }
+                        } else {
+                            NSLog("[ClaudePulse] CLI token invalid, falling back to WebView")
+                            self.isFetching = false
+                            self.activeDataSource = .webView
+                            self.performWebViewFetch()
+                        }
+                    }
                 }
             }
         }
@@ -356,6 +370,8 @@ class UsageDataProvider: NSObject, ObservableObject {
     private var cliBackoffSeconds: TimeInterval = 0
     private static let cliBackoffSteps: [TimeInterval] = [300, 600, 900] // 5m, 10m, 15m
     private var nextEndpoint: ClaudeUsageFetcher.Endpoint = .oauthUsage
+    private var lastOAuthSessionPct: Double = 0
+    private var lastOAuthWeeklyPct: Double = 0
     private var lastSonnetPercentage: Double = 0
     private var lastSonnetResetTime: Date?
     private var oauthCooldownUntil: Date?
@@ -377,19 +393,28 @@ class UsageDataProvider: NSObject, ObservableObject {
                     return
                 }
             }
-            // Re-read token from credentials in case Claude Code refreshed it
-            guard let json = try? CLICredentialsReader.shared.readCredentials(),
-                  let freshToken = CLICredentialsReader.shared.extractAccessToken(from: json)
-            else { return }
-            let freshPlan = CLICredentialsReader.shared.extractSubscriptionType(from: json)?.capitalized ?? plan
-            activeDataSource = .cliAPI(accessToken: freshToken, planName: freshPlan)
             isFetching = true
-            lastCLIFetchDate = Date()
-            if manualRefresh {
-                // Manual refresh — always use messages to preserve oauth/usage rate budget
-                Task { await fetchUsageViaCLI(accessToken: freshToken, planName: freshPlan, forceEndpoint: .messagesHeaders) }
-            } else {
-                Task { await fetchUsageViaCLI(accessToken: freshToken, planName: freshPlan) }
+            let isManual = manualRefresh
+            let fallbackPlan = plan
+            // Re-read token off main thread
+            Task.detached(priority: .userInitiated) {
+                let json = try? CLICredentialsReader.shared.readCredentials()
+                let freshToken = json.flatMap { CLICredentialsReader.shared.extractAccessToken(from: $0) }
+                let freshPlan = json.flatMap { CLICredentialsReader.shared.extractSubscriptionType(from: $0)?.capitalized } ?? fallbackPlan
+
+                await MainActor.run {
+                    guard let freshToken else {
+                        self.isFetching = false
+                        return
+                    }
+                    self.activeDataSource = .cliAPI(accessToken: freshToken, planName: freshPlan)
+                    self.lastCLIFetchDate = Date()
+                    if isManual {
+                        Task { await self.fetchUsageViaCLI(accessToken: freshToken, planName: freshPlan, forceEndpoint: .messagesHeaders) }
+                    } else {
+                        Task { await self.fetchUsageViaCLI(accessToken: freshToken, planName: freshPlan) }
+                    }
+                }
             }
         case .webView, .none:
             isFetching = true
@@ -404,27 +429,33 @@ class UsageDataProvider: NSObject, ObservableObject {
     func signInViaCLI() {
         UserDefaults.standard.set(false, forKey: "didExplicitlyLogOut")
         UserDefaults.standard.set("cliAPI", forKey: "lastAuthSource")
-
-        guard let json = try? CLICredentialsReader.shared.readCredentials(),
-              !CLICredentialsReader.shared.isTokenExpired(json),
-              let token = CLICredentialsReader.shared.extractAccessToken(from: json)
-        else {
-            fetchError = "Could not read CLI credentials. Run `claude login` first."
-            return
-        }
-
         isFetching = true
-        Task {
-            let valid = await ClaudeUsageFetcher.shared.validateToken(accessToken: token)
+
+        Task.detached(priority: .userInitiated) {
+            let json = try? CLICredentialsReader.shared.readCredentials()
+            let token = json.flatMap { CLICredentialsReader.shared.extractAccessToken(from: $0) }
+            let expired = json.map { CLICredentialsReader.shared.isTokenExpired($0) } ?? true
+
             await MainActor.run {
-                if valid {
-                    let plan = CLICredentialsReader.shared.extractSubscriptionType(from: json)?.capitalized ?? "Pro"
-                    self.activeDataSource = .cliAPI(accessToken: token, planName: plan)
-                    Task { await self.fetchUsageViaCLI(accessToken: token, planName: plan) }
-                } else {
+                guard let json, let token, !expired else {
                     self.isFetching = false
-                    self.cliAvailable = false
-                    self.fetchError = "CLI token is no longer valid. Run `claude login` to refresh."
+                    self.fetchError = "Could not read CLI credentials. Run `claude login` first."
+                    return
+                }
+
+                Task {
+                    let valid = await ClaudeUsageFetcher.shared.validateToken(accessToken: token)
+                    await MainActor.run {
+                        if valid {
+                            let plan = CLICredentialsReader.shared.extractSubscriptionType(from: json)?.capitalized ?? "Pro"
+                            self.activeDataSource = .cliAPI(accessToken: token, planName: plan)
+                            Task { await self.fetchUsageViaCLI(accessToken: token, planName: plan) }
+                        } else {
+                            self.isFetching = false
+                            self.cliAvailable = false
+                            self.fetchError = "CLI token is no longer valid. Run `claude login` to refresh."
+                        }
+                    }
                 }
             }
         }
@@ -454,23 +485,13 @@ class UsageDataProvider: NSObject, ObservableObject {
         UserDefaults.standard.set(true, forKey: "didExplicitlyLogOut")
     }
 
-    /// Checks if CLI credentials exist and token is valid on the server.
+    /// Checks if CLI credentials exist locally (no API call — fast, safe for UI).
     func refreshCLIAvailability() {
-        do {
-            guard let json = try CLICredentialsReader.shared.readCredentials(),
-                  !CLICredentialsReader.shared.isTokenExpired(json),
-                  let token = CLICredentialsReader.shared.extractAccessToken(from: json)
-            else {
-                cliAvailable = false
-                return
-            }
-            // Async server-side validation
-            Task {
-                let valid = await ClaudeUsageFetcher.shared.validateToken(accessToken: token)
-                await MainActor.run { self.cliAvailable = valid }
-            }
-        } catch {
-            cliAvailable = false
+        Task.detached(priority: .utility) {
+            let json = try? CLICredentialsReader.shared.readCredentials()
+            let hasValid = json.flatMap { CLICredentialsReader.shared.extractAccessToken(from: $0) } != nil
+                && !(json.map { CLICredentialsReader.shared.isTokenExpired($0) } ?? true)
+            await MainActor.run { self.cliAvailable = hasValid }
         }
     }
 
@@ -498,15 +519,23 @@ class UsageDataProvider: NSObject, ObservableObject {
                 // Alternate endpoint for next call
                 self.nextEndpoint = (endpoint == .oauthUsage) ? .messagesHeaders : .oauthUsage
 
-                // Messages API doesn't return sonnet data — merge from last oauth/usage
+                // oauth/usage is the authoritative source — cache its values
+                // Messages API returns different numbers, so merge from last oauth where needed
                 if endpoint == .oauthUsage {
+                    self.lastOAuthSessionPct = usage.sessionPercentage
+                    self.lastOAuthWeeklyPct = usage.weeklyPercentage
                     self.lastSonnetPercentage = usage.sonnetPercentage
                     self.lastSonnetResetTime = usage.sonnetResetTime
                     self.oauthCooldownStep = 0
                     self.oauthCooldownUntil = nil
-                } else if usage.sonnetPercentage == 0 {
-                    usage.sonnetPercentage = self.lastSonnetPercentage
-                    usage.sonnetResetTime = self.lastSonnetResetTime
+                } else {
+                    // Messages API tends to undercount — use max of messages vs last oauth
+                    usage.sessionPercentage = max(usage.sessionPercentage, self.lastOAuthSessionPct)
+                    usage.weeklyPercentage = max(usage.weeklyPercentage, self.lastOAuthWeeklyPct)
+                    if usage.sonnetPercentage == 0 {
+                        usage.sonnetPercentage = self.lastSonnetPercentage
+                        usage.sonnetResetTime = self.lastSonnetResetTime
+                    }
                 }
 
                 self.currentSnapshot = self.convertToSnapshot(usage: usage, planName: planName)
@@ -576,13 +605,16 @@ class UsageDataProvider: NSObject, ObservableObject {
                 self.cliBackoffSeconds = 0
                 self.lastCLIFetchDate = nil
                 self.stopCredentialsWatcher()
-                // Re-read credentials and fetch with new token
-                if let json = try? CLICredentialsReader.shared.readCredentials(),
-                   let token = CLICredentialsReader.shared.extractAccessToken(from: json) {
+                // Re-read credentials off main thread
+                Task.detached(priority: .userInitiated) {
+                    guard let json = try? CLICredentialsReader.shared.readCredentials(),
+                          let token = CLICredentialsReader.shared.extractAccessToken(from: json) else { return }
                     let plan = CLICredentialsReader.shared.extractSubscriptionType(from: json)?.capitalized ?? "Pro"
-                    self.activeDataSource = .cliAPI(accessToken: token, planName: plan)
-                    self.isFetching = true
-                    Task { await self.fetchUsageViaCLI(accessToken: token, planName: plan) }
+                    await MainActor.run {
+                        self.activeDataSource = .cliAPI(accessToken: token, planName: plan)
+                        self.isFetching = true
+                        Task { await self.fetchUsageViaCLI(accessToken: token, planName: plan) }
+                    }
                 }
             } else {
                 self.lastKnownCredentialsMod = currentMod

@@ -18,12 +18,17 @@ final class CLICredentialsReader {
 
     /// Reads and validates CLI credentials JSON. Returns nil if not logged in.
     func readCredentials() throws -> String? {
-        // 1. Try file first (most reliable, not subject to Keychain truncation)
+        // Skip everything if Claude Code is not installed
+        guard FileManager.default.fileExists(atPath: claudeDirectory.path) else {
+            return nil
+        }
+
+        // 1. Try file first (most reliable, no subprocess needed)
         if let fileJSON = readCredentialsFile() {
             return fileJSON
         }
 
-        // 2. Try Keychain
+        // 2. Try Keychain (only if .claude dir exists but credentials file is missing)
         let rawJSON = try readKeychainCredentials()
         guard let raw = rawJSON else { return nil }
 
@@ -137,6 +142,26 @@ final class CLICredentialsReader {
 
     // MARK: - Keychain credentials (via /usr/bin/security CLI)
 
+    /// Runs a Process with a timeout. Returns false if timed out (process is killed).
+    private func runWithTimeout(_ process: Process, timeout: TimeInterval = 10) -> Bool {
+        let semaphore = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in semaphore.signal() }
+
+        do {
+            try process.run()
+        } catch {
+            return false
+        }
+
+        let result = semaphore.wait(timeout: .now() + timeout)
+        if result == .timedOut {
+            process.terminate()
+            NSLog("[ClaudePulse] Process timed out: %@", process.arguments?.joined(separator: " ") ?? "")
+            return false
+        }
+        return true
+    }
+
     private func readKeychainCredentials() throws -> String? {
         let serviceName = resolveServiceName()
         let process = Process()
@@ -144,12 +169,13 @@ final class CLICredentialsReader {
         process.arguments = ["find-generic-password", "-s", serviceName, "-a", NSUserName(), "-w"]
 
         let outputPipe = Pipe()
-        let errorPipe = Pipe()
         process.standardOutput = outputPipe
-        process.standardError = errorPipe
+        process.standardError = Pipe()
 
-        try process.run()
-        process.waitUntilExit()
+        guard runWithTimeout(process) else {
+            NSLog("[ClaudePulse] Keychain read timed out")
+            return nil
+        }
 
         switch process.terminationStatus {
         case 0:
@@ -199,11 +225,8 @@ final class CLICredentialsReader {
         process.arguments = ["find-generic-password", "-s", serviceName, "-a", NSUserName()]
         process.standardOutput = Pipe()
         process.standardError = Pipe()
-        do {
-            try process.run()
-            process.waitUntilExit()
-            return process.terminationStatus == 0
-        } catch { return false }
+        guard runWithTimeout(process) else { return false }
+        return process.terminationStatus == 0
     }
 
     private func findHashedServiceName() -> String? {
@@ -214,11 +237,10 @@ final class CLICredentialsReader {
         process.standardOutput = outputPipe
         process.standardError = Pipe()
 
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch { return nil }
-
+        guard runWithTimeout(process, timeout: 5) else {
+            NSLog("[ClaudePulse] dump-keychain timed out")
+            return nil
+        }
         guard process.terminationStatus == 0 else { return nil }
 
         let output = String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
