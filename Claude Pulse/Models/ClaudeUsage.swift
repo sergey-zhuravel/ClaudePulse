@@ -17,6 +17,9 @@ struct ClaudeUsage {
     var sonnetPercentage: Double
     var sonnetResetTime: Date?
 
+    var designPercentage: Double
+    var designResetTime: Date?
+
     var lastUpdated: Date
 
     var effectiveSessionPercentage: Double {

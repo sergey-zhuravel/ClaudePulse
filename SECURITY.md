@@ -15,7 +15,7 @@ Claude Pulse supports two authentication modes to fetch usage data. It does **no
 - **Claude Code CLI credentials** (CLI mode) — OAuth token read. The token is kept in memory only and never written to disk by the app.
 - **`~/.claude.json`** (CLI mode) — Read-only access to extract the account email address for display. No data is modified.
 - **claude.ai cookies** (WebView mode) — stored in the system's default `WKWebsiteDataStore`, used to authenticate with Claude. Never read or exported by the app.
-- **Usage data** — utilization percentages, limits, reset times, and plan type. Kept in memory only.
+- **Usage data** — utilization percentages, limits, and reset times for session (5h), weekly, Sonnet-only, and Claude Design quotas, plus plan type. Kept in memory only.
 - **Email address** — extracted from `~/.claude.json` (CLI mode) or the Claude UI (WebView mode). Stored in memory only, never persisted to disk.
 
 ### What the app does NOT do

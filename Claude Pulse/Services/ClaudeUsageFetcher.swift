@@ -157,6 +157,16 @@ final class ClaudeUsageFetcher {
             }
         }
 
+        // "omelette" is Anthropic's internal codename for Claude Design
+        var designPercentage = 0.0
+        var designResetTime: Date? = nil
+        if let design = json["seven_day_omelette"] as? [String: Any] {
+            if let util = design["utilization"] { designPercentage = parseNumber(util) }
+            if let resetsAt = design["resets_at"] as? String {
+                designResetTime = parseISO8601(resetsAt)
+            }
+        }
+
         return ClaudeUsage(
             sessionPercentage: sessionPercentage,
             sessionResetTime: sessionResetTime,
@@ -164,6 +174,8 @@ final class ClaudeUsageFetcher {
             weeklyResetTime: weeklyResetTime,
             sonnetPercentage: sonnetPercentage,
             sonnetResetTime: sonnetResetTime,
+            designPercentage: designPercentage,
+            designResetTime: designResetTime,
             lastUpdated: Date()
         )
     }
@@ -191,8 +203,8 @@ final class ClaudeUsageFetcher {
             ? Date(timeIntervalSince1970: weeklyResetTs)
             : Date().nextMonday1259pm()
 
-        // Messages API doesn't return sonnet-specific data;
-        // sonnet values stay at 0 — the provider merges from previous oauth/usage response.
+        // Messages API doesn't return per-feature data;
+        // sonnet/design values stay at 0 — the provider merges from previous oauth/usage response.
         return ClaudeUsage(
             sessionPercentage: sessionPercentage,
             sessionResetTime: sessionResetTime,
@@ -200,6 +212,8 @@ final class ClaudeUsageFetcher {
             weeklyResetTime: weeklyResetTime,
             sonnetPercentage: 0,
             sonnetResetTime: nil,
+            designPercentage: 0,
+            designResetTime: nil,
             lastUpdated: Date()
         )
     }

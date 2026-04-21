@@ -21,6 +21,10 @@ struct QuotaSnapshot {
     var sonnetCapacity:   Int = 0   // sonnet-only weekly limit (from DOM)
     var sonnetResetDate:  Date?     // sonnet-only reset date
     var sonnetResetText:  String = ""
+    var designConsumed:   Int = 0   // claude design weekly usage
+    var designCapacity:   Int = 0   // claude design weekly limit
+    var designResetDate:  Date?
+    var designResetText:  String = ""
     var userEmail:        String = ""
     var throttleStatus:   String
     var refreshedAt:      Date
@@ -54,6 +58,11 @@ struct QuotaSnapshot {
     var sonnetFraction: Double {
         guard sonnetCapacity > 0 else { return 0 }
         return min(1.0, Double(sonnetConsumed) / Double(sonnetCapacity))
+    }
+
+    var designFraction: Double {
+        guard designCapacity > 0 else { return 0 }
+        return min(1.0, Double(designConsumed) / Double(designCapacity))
     }
     
     var remainingMessages: Int { max(0, activeCapacity - activeConsumed) }
@@ -137,6 +146,14 @@ struct QuotaSnapshot {
     var sonnetResetLabel: String? {
         if !sonnetResetText.isEmpty { return "Resets \(sonnetResetText)" }
         guard let date = sonnetResetDate else { return nil }
+        let f = DateFormatter()
+        f.dateFormat = "EEE h:mm a"
+        return "Resets \(f.string(from: date))"
+    }
+
+    var designResetLabel: String? {
+        if !designResetText.isEmpty { return "Resets \(designResetText)" }
+        guard let date = designResetDate else { return nil }
         let f = DateFormatter()
         f.dateFormat = "EEE h:mm a"
         return "Resets \(f.string(from: date))"

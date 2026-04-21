@@ -17,7 +17,7 @@ struct DashboardView: View {
     private var pollingLabel: String {
         dataProvider.pollingIntervalLabel
     }
-    
+
     var body: some View {
         ZStack {
             // Frosted-glass base
@@ -275,13 +275,23 @@ struct DashboardView: View {
                                 fraction: snapshot.periodFraction
                             )
 
-                            if snapshot.sonnetCapacity > 0 {
+                            if snapshot.sonnetCapacity > 0 && snapshot.sonnetFraction > 0 {
                                 quotaBarRow(
                                     title: "Sonnet only",
                                     resetLabel: snapshot.sonnetResetLabel,
                                     consumed: snapshot.sonnetConsumed,
                                     capacity: snapshot.sonnetCapacity,
                                     fraction: snapshot.sonnetFraction
+                                )
+                            }
+
+                            if snapshot.designCapacity > 0 && snapshot.designFraction > 0 {
+                                quotaBarRow(
+                                    title: "Claude Design",
+                                    resetLabel: snapshot.designResetLabel,
+                                    consumed: snapshot.designConsumed,
+                                    capacity: snapshot.designCapacity,
+                                    fraction: snapshot.designFraction
                                 )
                             }
                         }

@@ -323,21 +323,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ).environmentObject(dataProvider)
         let hostingController = NSHostingController(rootView: rootView)
         hostingController.view.wantsLayer = true
-        
+        // Let SwiftUI's intrinsic height drive the popover size — no hardcoding.
+        hostingController.sizingOptions = [.preferredContentSize]
+
         floatingPanel = NSPopover()
-        floatingPanel.contentSize           = NSSize(width: 320, height: 360)
         floatingPanel.behavior              = .transient
         floatingPanel.animates              = true
         floatingPanel.contentViewController = hostingController
-    }
-    
-    private func updatePanelSize(snapshot: QuotaSnapshot?) {
-        let hasSonnet = (snapshot?.sonnetCapacity ?? 0) > 0
-        let hasData = snapshot != nil
-        let height: CGFloat = hasData ? (hasSonnet ? 420 : 380) : 400
-        let size = NSSize(width: 320, height: height)
-        floatingPanel.contentSize = size
-        floatingPanel.contentViewController?.preferredContentSize = size
     }
 
     private func togglePanel() {
@@ -362,7 +354,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self else { return }
                 guard let snapshot = snapshot else {
                     self.refreshIcon(snapshot: nil)
-                    self.updatePanelSize(snapshot: nil)
                     return
                 }
                 // Detect session reset (pct dropped) → clear history
@@ -377,7 +368,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 var enriched = snapshot
                 enriched.consumptionHistory = self.consumptionLog
                 self.refreshIcon(snapshot: enriched)
-                self.updatePanelSize(snapshot: enriched)
                 self.alertEngine.evaluateAndDispatch(snapshot: enriched)
             }
             .store(in: &subscriptions)

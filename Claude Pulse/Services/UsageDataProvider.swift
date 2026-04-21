@@ -68,7 +68,8 @@ private let kDOMParserScript = """
         planType: 'Unknown', messagesUsed: -1, messagesLimit: -1,
         sessionUsed: -1, sessionLimit: -1,
         sonnetUsed: -1, sonnetLimit: -1,
-        resetDateStr: '', sessionResetStr: '', weeklyResetStr: '', sonnetResetStr: '',
+        designUsed: -1, designLimit: -1,
+        resetDateStr: '', sessionResetStr: '', weeklyResetStr: '', sonnetResetStr: '', designResetStr: '',
         rateLimitStatus: 'Normal', needsLogin: false, source: 'dom',
         userEmail: '', rawText: ''
     };
@@ -158,9 +159,18 @@ private let kDOMParserScript = """
             }
         }
 
-        // aria progressbars: session (0), all models (1), sonnet only (2)
+        // aria progressbars: session (0), all models (1), sonnet only (2), claude design (3)
         var bars = Array.from(document.querySelectorAll('[role="progressbar"]'));
-        if (bars.length >= 3) {
+        if (bars.length >= 4) {
+            r.sessionUsed   = parseInt(bars[0].getAttribute('aria-valuenow')||'0');
+            r.sessionLimit  = parseInt(bars[0].getAttribute('aria-valuemax')||'0');
+            r.messagesUsed  = parseInt(bars[1].getAttribute('aria-valuenow')||'0');
+            r.messagesLimit = parseInt(bars[1].getAttribute('aria-valuemax')||'0');
+            r.sonnetUsed    = parseInt(bars[2].getAttribute('aria-valuenow')||'0');
+            r.sonnetLimit   = parseInt(bars[2].getAttribute('aria-valuemax')||'0');
+            r.designUsed    = parseInt(bars[3].getAttribute('aria-valuenow')||'0');
+            r.designLimit   = parseInt(bars[3].getAttribute('aria-valuemax')||'0');
+        } else if (bars.length >= 3) {
             r.sessionUsed   = parseInt(bars[0].getAttribute('aria-valuenow')||'0');
             r.sessionLimit  = parseInt(bars[0].getAttribute('aria-valuemax')||'0');
             r.messagesUsed  = parseInt(bars[1].getAttribute('aria-valuenow')||'0');
@@ -184,6 +194,7 @@ private let kDOMParserScript = """
         if (allResets.length > 0) r.sessionResetStr = allResets[0][1].trim();
         if (allResets.length > 1) r.weeklyResetStr  = allResets[1][1].trim();
         if (allResets.length > 2) r.sonnetResetStr  = allResets[2][1].trim();
+        if (allResets.length > 3) r.designResetStr  = allResets[3][1].trim();
 
         // Fallback reset date: "Resets on December 25"
         var rd = body.match(/resets?\\s+(?:on\\s+)?([A-Z][a-z]+\\s+\\d{1,2}(?:,?\\s*\\d{4})?)/i);
@@ -374,6 +385,8 @@ class UsageDataProvider: NSObject, ObservableObject {
     private var lastOAuthWeeklyPct: Double = 0
     private var lastSonnetPercentage: Double = 0
     private var lastSonnetResetTime: Date?
+    private var lastDesignPercentage: Double = 0
+    private var lastDesignResetTime: Date?
     private var oauthCooldownUntil: Date?
     private var oauthCooldownStep = 0
     private static let oauthCooldownSteps: [TimeInterval] = [900, 1800, 2700, 3600] // 15m, 30m, 45m, 60m
@@ -526,6 +539,8 @@ class UsageDataProvider: NSObject, ObservableObject {
                     self.lastOAuthWeeklyPct = usage.weeklyPercentage
                     self.lastSonnetPercentage = usage.sonnetPercentage
                     self.lastSonnetResetTime = usage.sonnetResetTime
+                    self.lastDesignPercentage = usage.designPercentage
+                    self.lastDesignResetTime = usage.designResetTime
                     self.oauthCooldownStep = 0
                     self.oauthCooldownUntil = nil
                 } else {
@@ -535,6 +550,10 @@ class UsageDataProvider: NSObject, ObservableObject {
                     if usage.sonnetPercentage == 0 {
                         usage.sonnetPercentage = self.lastSonnetPercentage
                         usage.sonnetResetTime = self.lastSonnetResetTime
+                    }
+                    if usage.designPercentage == 0 {
+                        usage.designPercentage = self.lastDesignPercentage
+                        usage.designResetTime = self.lastDesignResetTime
                     }
                 }
 
@@ -655,6 +674,8 @@ class UsageDataProvider: NSObject, ObservableObject {
             "weeklyResetTime": usage.weeklyResetTime.timeIntervalSince1970,
             "sonnetPercentage": usage.sonnetPercentage,
             "sonnetResetTime": usage.sonnetResetTime?.timeIntervalSince1970 ?? 0,
+            "designPercentage": usage.designPercentage,
+            "designResetTime": usage.designResetTime?.timeIntervalSince1970 ?? 0,
             "planName": planName,
             "savedAt": Date().timeIntervalSince1970
         ]
@@ -676,6 +697,11 @@ class UsageDataProvider: NSObject, ObservableObject {
             sonnetPercentage: cache["sonnetPercentage"] as? Double ?? 0,
             sonnetResetTime: {
                 let ts = cache["sonnetResetTime"] as? TimeInterval ?? 0
+                return ts > 0 ? Date(timeIntervalSince1970: ts) : nil
+            }(),
+            designPercentage: cache["designPercentage"] as? Double ?? 0,
+            designResetTime: {
+                let ts = cache["designResetTime"] as? TimeInterval ?? 0
                 return ts > 0 ? Date(timeIntervalSince1970: ts) : nil
             }(),
             lastUpdated: Date(timeIntervalSince1970: savedAt)
@@ -716,6 +742,11 @@ class UsageDataProvider: NSObject, ObservableObject {
             snapshot.sonnetConsumed = Int(usage.sonnetPercentage.rounded())
             snapshot.sonnetCapacity = 100
             snapshot.sonnetResetDate = usage.sonnetResetTime
+        }
+        if usage.designPercentage > 0 || usage.designResetTime != nil {
+            snapshot.designConsumed = Int(usage.designPercentage.rounded())
+            snapshot.designCapacity = 100
+            snapshot.designResetDate = usage.designResetTime
         }
         if let email = CLICredentialsReader.shared.readEmail() {
             snapshot.userEmail = email
@@ -815,30 +846,76 @@ class UsageDataProvider: NSObject, ObservableObject {
     }
 
     // MARK: - DOM extraction (fallback)
-    
+
+    // Cumulative seconds from didFinish. Cold-start React renders progressbars
+    // late; we probe repeatedly until we see data instead of giving up at 5 s.
+    // Final delay stays under the 15 s scheduleFetchTimeout safety net.
+    private static let domParseDelays: [TimeInterval] = [2.5, 4.5, 7.0, 10.0, 13.5]
+
     private func executeDOMParsing() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
-            guard let self else { return }
-            self.dataWebView.evaluateJavaScript(kDOMParserScript) { [weak self] result, error in
-                guard let self else { return }
-                guard let s = result as? String,
-                      let d = s.data(using: .utf8),
-                      let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any]
-                else {
-                    NSLog("[ClaudePulse] DOM parsing failed: %@", error?.localizedDescription ?? "nil result")
+        scheduleDOMParseAttempt(index: 0)
+    }
+
+    private func scheduleDOMParseAttempt(index: Int) {
+        let delays = Self.domParseDelays
+        guard index < delays.count else { return }
+        let isFinal = (index == delays.count - 1)
+        let wait = index == 0 ? delays[0] : delays[index] - delays[index - 1]
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
+            self?.attemptDOMParse(isFinal: isFinal) { foundData in
+                guard !foundData, !isFinal else { return }
+                self?.scheduleDOMParseAttempt(index: index + 1)
+            }
+        }
+    }
+
+    private func attemptDOMParse(isFinal: Bool, completion: @escaping (Bool) -> Void) {
+        dataWebView.evaluateJavaScript(kDOMParserScript) { [weak self] result, error in
+            guard let self else { completion(false); return }
+            guard let s = result as? String,
+                  let d = s.data(using: .utf8),
+                  let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any]
+            else {
+                NSLog("[ClaudePulse] DOM parsing failed: %@", error?.localizedDescription ?? "nil result")
+                if isFinal {
                     DispatchQueue.main.async {
                         self.isFetching = false
                         self.cancelFetchTimeout()
                     }
-                    return
                 }
+                completion(false)
+                return
+            }
+
+            // Auth required — stop retrying, hand off to the existing flow.
+            if j["needsLogin"] as? Bool == true {
+                DispatchQueue.main.async {
+                    self.isFetching = false
+                    self.cancelFetchTimeout()
+                    self.processDOMPayload(j)
+                }
+                completion(true)
+                return
+            }
+
+            let hasData = Self.domPayloadHasData(j)
+            if hasData || isFinal {
                 DispatchQueue.main.async {
                     self.isFetching = false
                     self.cancelFetchTimeout()
                     self.processDOMPayload(j)
                 }
             }
+            completion(hasData)
         }
+    }
+
+    private static func domPayloadHasData(_ j: [String: Any]) -> Bool {
+        let keys = ["messagesLimit", "sessionLimit", "sonnetLimit", "designLimit"]
+        for k in keys {
+            if let v = j[k] as? Int, v > 0 { return true }
+        }
+        return false
     }
     
     // MARK: - Parsing
@@ -915,16 +992,20 @@ class UsageDataProvider: NSObject, ObservableObject {
         let windowCapacity   = j["sessionLimit"]    as? Int    ?? 0
         let sonnetConsumed   = j["sonnetUsed"]      as? Int    ?? 0
         let sonnetCapacity   = j["sonnetLimit"]     as? Int    ?? 0
+        let designConsumed   = j["designUsed"]      as? Int    ?? 0
+        let designCapacity   = j["designLimit"]     as? Int    ?? 0
         let throttleStatus   = j["rateLimitStatus"]  as? String ?? "Normal"
         let resetDateStr     = j["resetDateStr"]     as? String ?? ""
         let sessionResetStr  = j["sessionResetStr"]  as? String ?? ""
         let weeklyResetStr   = j["weeklyResetStr"]   as? String ?? ""
         let sonnetResetStr   = j["sonnetResetStr"]   as? String ?? ""
+        let designResetStr   = j["designResetStr"]   as? String ?? ""
         let userEmail        = j["userEmail"]         as? String ?? ""
 
         var windowResetDate: Date?
         var periodResetDate: Date?
         var sonnetResetDate: Date?
+        var designResetDate: Date?
         
         // 1. Absolute date string: "resets on December 25" → billing-period / weekly reset
         if !resetDateStr.isEmpty {
@@ -954,6 +1035,10 @@ class UsageDataProvider: NSObject, ObservableObject {
         if !sonnetResetStr.isEmpty {
             sonnetResetDate = resolveRelativeInterval(sonnetResetStr)
         }
+
+        if !designResetStr.isEmpty {
+            designResetDate = resolveRelativeInterval(designResetStr)
+        }
         
         _ = j["rawText"]
         
@@ -976,9 +1061,14 @@ class UsageDataProvider: NSObject, ObservableObject {
             snapshot.sonnetConsumed = sonnetConsumed
             snapshot.sonnetCapacity = sonnetCapacity
         }
+        if designCapacity > 0 {
+            snapshot.designConsumed = designConsumed
+            snapshot.designCapacity = designCapacity
+        }
         if let rd = windowResetDate { snapshot.windowResetDate = rd }
         if let wd = periodResetDate { snapshot.periodResetDate = wd; snapshot.periodResetText = "" }
         if let sd = sonnetResetDate { snapshot.sonnetResetDate = sd; snapshot.sonnetResetText = "" }
+        if let dd = designResetDate { snapshot.designResetDate = dd; snapshot.designResetText = "" }
         // Store raw text for absolute day+time formats (e.g. "Fri 10:00 AM")
         // These couldn't be parsed to Date by resolveRelativeInterval
         let isAbsolute = { (s: String) -> Bool in s.range(of: #"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)"#, options: .regularExpression) != nil }
@@ -987,6 +1077,7 @@ class UsageDataProvider: NSObject, ObservableObject {
         }
         if !weeklyResetStr.isEmpty && isAbsolute(weeklyResetStr) { snapshot.periodResetText = weeklyResetStr }
         if !sonnetResetStr.isEmpty && isAbsolute(sonnetResetStr) { snapshot.sonnetResetText = sonnetResetStr }
+        if !designResetStr.isEmpty && isAbsolute(designResetStr) { snapshot.designResetText = designResetStr }
         if !userEmail.isEmpty { snapshot.userEmail = userEmail }
         snapshot.throttleStatus = throttleStatus
         snapshot.refreshedAt = Date()
