@@ -67,8 +67,8 @@ private let kDOMParserScript = """
     var r = {
         planType: 'Unknown', messagesUsed: -1, messagesLimit: -1,
         sessionUsed: -1, sessionLimit: -1,
-        sonnetUsed: -1, sonnetLimit: -1,
-        designUsed: -1, designLimit: -1,
+        sonnetUsed: -1, sonnetLimit: -1, sonnetTitle: '',
+        designUsed: -1, designLimit: -1, designTitle: '',
         resetDateStr: '', sessionResetStr: '', weeklyResetStr: '', sonnetResetStr: '', designResetStr: '',
         rateLimitStatus: 'Normal', needsLogin: false, source: 'dom',
         userEmail: '', rawText: ''
@@ -159,42 +159,81 @@ private let kDOMParserScript = """
             }
         }
 
-        // aria progressbars: session (0), all models (1), sonnet only (2), claude design (3)
+        // ── Progressbars: classify by row label, not by index ──────────────
+        // The page now includes a "Usage credits" section with its own bars,
+        // and the model-scoped row is named after the model ("Fable", "Sonnet"…),
+        // so positional mapping mis-assigns rows.
         var bars = Array.from(document.querySelectorAll('[role="progressbar"]'));
-        if (bars.length >= 4) {
-            r.sessionUsed   = parseInt(bars[0].getAttribute('aria-valuenow')||'0');
-            r.sessionLimit  = parseInt(bars[0].getAttribute('aria-valuemax')||'0');
-            r.messagesUsed  = parseInt(bars[1].getAttribute('aria-valuenow')||'0');
-            r.messagesLimit = parseInt(bars[1].getAttribute('aria-valuemax')||'0');
-            r.sonnetUsed    = parseInt(bars[2].getAttribute('aria-valuenow')||'0');
-            r.sonnetLimit   = parseInt(bars[2].getAttribute('aria-valuemax')||'0');
-            r.designUsed    = parseInt(bars[3].getAttribute('aria-valuenow')||'0');
-            r.designLimit   = parseInt(bars[3].getAttribute('aria-valuemax')||'0');
-        } else if (bars.length >= 3) {
-            r.sessionUsed   = parseInt(bars[0].getAttribute('aria-valuenow')||'0');
-            r.sessionLimit  = parseInt(bars[0].getAttribute('aria-valuemax')||'0');
-            r.messagesUsed  = parseInt(bars[1].getAttribute('aria-valuenow')||'0');
-            r.messagesLimit = parseInt(bars[1].getAttribute('aria-valuemax')||'0');
-            r.sonnetUsed    = parseInt(bars[2].getAttribute('aria-valuenow')||'0');
-            r.sonnetLimit   = parseInt(bars[2].getAttribute('aria-valuemax')||'0');
-        } else if (bars.length >= 2) {
-            r.sessionUsed  = parseInt(bars[0].getAttribute('aria-valuenow')||'0');
-            r.sessionLimit = parseInt(bars[0].getAttribute('aria-valuemax')||'0');
-            r.messagesUsed = parseInt(bars[bars.length-1].getAttribute('aria-valuenow')||'0');
-            r.messagesLimit= parseInt(bars[bars.length-1].getAttribute('aria-valuemax')||'0');
-        } else if (bars.length === 1) {
-            r.messagesUsed = parseInt(bars[0].getAttribute('aria-valuenow')||'0');
-            r.messagesLimit= parseInt(bars[0].getAttribute('aria-valuemax')||'0');
+        // [A-Za-z]+ (not \\w+): row text has no space before the percent
+        // ("…30 min17% used"), \\w+ would swallow the digits.
+        var resetRe = /Resets\\s+(in\\s+\\d+\\s+[A-Za-z]+(?:\\s+\\d+\\s+[A-Za-z]+)?|(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[A-Za-z]*\\s+\\d{1,2}:\\d{2}\\s*(?:AM|PM))/;
+        var rows = [];
+        for (var bi = 0; bi < bars.length; bi++) {
+            var now = parseInt(bars[bi].getAttribute('aria-valuenow') || '-1');
+            var max = parseInt(bars[bi].getAttribute('aria-valuemax') || '-1');
+            if (max <= 0 || now < 0) continue;
+            // Climb to the row container: the SMALLEST ancestor whose text
+            // includes the "Resets …" label — climbing further reaches the
+            // whole section ("Weekly limits … All models … Fable …") and
+            // classification would hit the wrong keyword.
+            var node = bars[bi], label = '', fallback = '';
+            for (var depth = 0; depth < 6 && node.parentElement; depth++) {
+                node = node.parentElement;
+                var t = (node.textContent || '').replace(/\\s+/g, ' ').trim();
+                if (t.length === 0) continue;
+                if (t.length >= 220) break;
+                fallback = t;
+                if (/Resets/i.test(t)) { label = t; break; }
+            }
+            rows.push({ used: now, limit: max, label: label || fallback });
         }
 
-        // Reset labels: collect ALL "Resets ..." occurrences in page order
+        var claimed = { session: false, weekly: false, sonnet: false, design: false };
+        for (var ri = 0; ri < rows.length; ri++) {
+            var lab = rows[ri].label;
+            if (/[$]|credit/i.test(lab)) continue;   // "Usage credits" section
+            var rm = lab.match(resetRe);
+            var resetStr = rm ? rm[1].trim() : '';
+            if (!claimed.session && /current\\s+session/i.test(lab)) {
+                r.sessionUsed = rows[ri].used; r.sessionLimit = rows[ri].limit;
+                if (resetStr) r.sessionResetStr = resetStr;
+                claimed.session = true;
+            } else if (!claimed.weekly && /all\\s+models/i.test(lab)) {
+                r.messagesUsed = rows[ri].used; r.messagesLimit = rows[ri].limit;
+                if (resetStr) r.weeklyResetStr = resetStr;
+                claimed.weekly = true;
+            } else if (!claimed.design && /design/i.test(lab)) {
+                r.designUsed = rows[ri].used; r.designLimit = rows[ri].limit;
+                if (resetStr) r.designResetStr = resetStr;
+                claimed.design = true;
+            } else if (!claimed.sonnet && lab.length > 0) {
+                // Model-scoped weekly row — titled with the model name
+                r.sonnetUsed = rows[ri].used; r.sonnetLimit = rows[ri].limit;
+                if (resetStr) r.sonnetResetStr = resetStr;
+                var name = lab.split(/Resets/i)[0].replace(/\\d+%\\s*used/ig, '').trim();
+                if (name && name.length <= 40) r.sonnetTitle = name;
+                claimed.sonnet = true;
+            }
+        }
+
+        // Positional fallback if labels matched nothing (markup change)
+        if (!claimed.session && !claimed.weekly) {
+            if (rows.length >= 2) {
+                r.sessionUsed  = rows[0].used;  r.sessionLimit  = rows[0].limit;
+                r.messagesUsed = rows[1].used;  r.messagesLimit = rows[1].limit;
+            } else if (rows.length === 1) {
+                r.messagesUsed = rows[0].used;  r.messagesLimit = rows[0].limit;
+            }
+        }
+
+        // Reset labels fallback: fill only fields the row parsing left empty.
         // Format 1: "Resets in 3 hr 58 min" (relative)
         // Format 2: "Resets Wed 10:59 AM" (absolute day+time)
-        var allResets = Array.from(body.matchAll(/Resets\\s+(in\\s+\\d+\\s+\\w+(?:\\s+\\d+\\s+\\w+)?|(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\\w*\\s+\\d{1,2}:\\d{2}\\s*(?:AM|PM))/g));
-        if (allResets.length > 0) r.sessionResetStr = allResets[0][1].trim();
-        if (allResets.length > 1) r.weeklyResetStr  = allResets[1][1].trim();
-        if (allResets.length > 2) r.sonnetResetStr  = allResets[2][1].trim();
-        if (allResets.length > 3) r.designResetStr  = allResets[3][1].trim();
+        var allResets = Array.from(body.matchAll(/Resets\\s+(in\\s+\\d+\\s+[A-Za-z]+(?:\\s+\\d+\\s+[A-Za-z]+)?|(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[A-Za-z]*\\s+\\d{1,2}:\\d{2}\\s*(?:AM|PM))/g));
+        if (!r.sessionResetStr && allResets.length > 0) r.sessionResetStr = allResets[0][1].trim();
+        if (!r.weeklyResetStr  && allResets.length > 1) r.weeklyResetStr  = allResets[1][1].trim();
+        if (!r.sonnetResetStr  && allResets.length > 2) r.sonnetResetStr  = allResets[2][1].trim();
+        if (!r.designResetStr  && allResets.length > 3) r.designResetStr  = allResets[3][1].trim();
 
         // Fallback reset date: "Resets on December 25"
         var rd = body.match(/resets?\\s+(?:on\\s+)?([A-Z][a-z]+\\s+\\d{1,2}(?:,?\\s*\\d{4})?)/i);
@@ -377,22 +416,23 @@ class UsageDataProvider: NSObject, ObservableObject {
     private static let cliMinInterval: TimeInterval = 300
     private var lastCLIFetchDate: Date?
     private var credentialsWatchTimer: Timer?
-    private var lastKnownCredentialsMod: Date?
+    private var lastKnownAccessToken: String?
     private var cliBackoffSeconds: TimeInterval = 0
     private static let cliBackoffSteps: [TimeInterval] = [300, 600, 900] // 5m, 10m, 15m
-    private var nextEndpoint: ClaudeUsageFetcher.Endpoint = .oauthUsage
-    private var lastOAuthSessionPct: Double = 0
-    private var lastOAuthWeeklyPct: Double = 0
+    /// Last values from oauth/usage — the only source of sonnet/design data.
+    /// Carried into messages-header results while their reset time is still in the future.
     private var lastSonnetPercentage: Double = 0
     private var lastSonnetResetTime: Date?
+    private var lastSonnetDisplayName: String?
     private var lastDesignPercentage: Double = 0
     private var lastDesignResetTime: Date?
+    private var lastDesignDisplayName: String?
     private var oauthCooldownUntil: Date?
     private var oauthCooldownStep = 0
     private static let oauthCooldownSteps: [TimeInterval] = [900, 1800, 2700, 3600] // 15m, 30m, 45m, 60m
 
     /// - Parameter manualRefresh: true when triggered by user action (popover open, refresh button).
-    ///   Manual refreshes use messages endpoint only; oauth/usage is reserved for automatic polling.
+    ///   Manual refreshes skip the polling throttle.
     func reloadData(manualRefresh: Bool = false) {
         guard !isFetching, !requiresAuth else { return }
 
@@ -407,12 +447,12 @@ class UsageDataProvider: NSObject, ObservableObject {
                 }
             }
             isFetching = true
-            let isManual = manualRefresh
             let fallbackPlan = plan
             // Re-read token off main thread
             Task.detached(priority: .userInitiated) {
                 let json = try? CLICredentialsReader.shared.readCredentials()
                 let freshToken = json.flatMap { CLICredentialsReader.shared.extractAccessToken(from: $0) }
+                let expired = json.map { CLICredentialsReader.shared.isTokenExpired($0) } ?? false
                 let freshPlan = json.flatMap { CLICredentialsReader.shared.extractSubscriptionType(from: $0)?.capitalized } ?? fallbackPlan
 
                 await MainActor.run {
@@ -420,13 +460,16 @@ class UsageDataProvider: NSObject, ObservableObject {
                         self.isFetching = false
                         return
                     }
+                    guard !expired else {
+                        // Don't burn a request on a token the API will reject.
+                        // Claude Code refreshes it on its next run — watch for that.
+                        self.isFetching = false
+                        self.handleStaleToken()
+                        return
+                    }
                     self.activeDataSource = .cliAPI(accessToken: freshToken, planName: freshPlan)
                     self.lastCLIFetchDate = Date()
-                    if isManual {
-                        Task { await self.fetchUsageViaCLI(accessToken: freshToken, planName: freshPlan, forceEndpoint: .messagesHeaders) }
-                    } else {
-                        Task { await self.fetchUsageViaCLI(accessToken: freshToken, planName: freshPlan) }
-                    }
+                    Task { await self.fetchUsageViaCLI(accessToken: freshToken, planName: freshPlan) }
                 }
             }
         case .webView, .none:
@@ -510,17 +553,14 @@ class UsageDataProvider: NSObject, ObservableObject {
 
     // MARK: - CLI API
 
-    private func fetchUsageViaCLI(accessToken: String, planName: String, forceEndpoint: ClaudeUsageFetcher.Endpoint? = nil) async {
-        var endpoint: ClaudeUsageFetcher.Endpoint
-        if let forced = forceEndpoint {
-            endpoint = forced
-        } else {
-            // Use alternating endpoint, skip oauth/usage if on cooldown
-            endpoint = await MainActor.run { self.nextEndpoint }
-            let cooldown: Date? = await MainActor.run { self.oauthCooldownUntil }
-            if endpoint == .oauthUsage, let cd = cooldown, Date() < cd {
-                endpoint = .messagesHeaders
-            }
+    private func fetchUsageViaCLI(accessToken: String, planName: String) async {
+        // oauth/usage is authoritative (and free) — always prefer it.
+        // /v1/messages costs a real message and starts a 5h window, so it is
+        // only a fallback while oauth/usage is on 429 cooldown.
+        var endpoint: ClaudeUsageFetcher.Endpoint = .oauthUsage
+        let cooldown: Date? = await MainActor.run { self.oauthCooldownUntil }
+        if let cd = cooldown, Date() < cd {
+            endpoint = .messagesHeaders
         }
 
         NSLog("[ClaudePulse] Fetching via %@", endpoint == .oauthUsage ? "oauth/usage" : "messages headers")
@@ -529,31 +569,29 @@ class UsageDataProvider: NSObject, ObservableObject {
             var usage = try await ClaudeUsageFetcher.shared.fetchUsage(accessToken: accessToken, endpoint: endpoint)
 
             await MainActor.run {
-                // Alternate endpoint for next call
-                self.nextEndpoint = (endpoint == .oauthUsage) ? .messagesHeaders : .oauthUsage
-
-                // oauth/usage is the authoritative source — cache its values
-                // Messages API returns different numbers, so merge from last oauth where needed
                 if endpoint == .oauthUsage {
-                    self.lastOAuthSessionPct = usage.sessionPercentage
-                    self.lastOAuthWeeklyPct = usage.weeklyPercentage
+                    // Remember sonnet/design — the messages fallback can't provide them
                     self.lastSonnetPercentage = usage.sonnetPercentage
                     self.lastSonnetResetTime = usage.sonnetResetTime
+                    self.lastSonnetDisplayName = usage.sonnetDisplayName
                     self.lastDesignPercentage = usage.designPercentage
                     self.lastDesignResetTime = usage.designResetTime
+                    self.lastDesignDisplayName = usage.designDisplayName
                     self.oauthCooldownStep = 0
                     self.oauthCooldownUntil = nil
                 } else {
-                    // Messages API tends to undercount — use max of messages vs last oauth
-                    usage.sessionPercentage = max(usage.sessionPercentage, self.lastOAuthSessionPct)
-                    usage.weeklyPercentage = max(usage.weeklyPercentage, self.lastOAuthWeeklyPct)
-                    if usage.sonnetPercentage == 0 {
+                    // Carry sonnet/design from the last oauth response, but only
+                    // while their reset time is still in the future — carrying
+                    // past-reset values is how quotas got frozen at stale highs.
+                    if let reset = self.lastSonnetResetTime, reset > Date() {
                         usage.sonnetPercentage = self.lastSonnetPercentage
-                        usage.sonnetResetTime = self.lastSonnetResetTime
+                        usage.sonnetResetTime = reset
+                        usage.sonnetDisplayName = self.lastSonnetDisplayName
                     }
-                    if usage.designPercentage == 0 {
+                    if let reset = self.lastDesignResetTime, reset > Date() {
                         usage.designPercentage = self.lastDesignPercentage
-                        usage.designResetTime = self.lastDesignResetTime
+                        usage.designResetTime = reset
+                        usage.designDisplayName = self.lastDesignDisplayName
                     }
                 }
 
@@ -574,7 +612,6 @@ class UsageDataProvider: NSObject, ObservableObject {
                         let cooldown = Self.oauthCooldownSteps[step]
                         self.oauthCooldownUntil = Date().addingTimeInterval(cooldown)
                         self.oauthCooldownStep += 1
-                        self.nextEndpoint = .messagesHeaders
                         NSLog("[ClaudePulse] oauth/usage rate limited, cooldown %.0fm, falling back to messages", cooldown / 60)
                     }
                     await fetchUsageViaCLI(accessToken: accessToken, planName: planName)
@@ -588,6 +625,14 @@ class UsageDataProvider: NSObject, ObservableObject {
                         NSLog("[ClaudePulse] Both endpoints rate limited, next retry in %.0fs", self.cliBackoffSeconds)
                         self.startCredentialsWatcher()
                     }
+                }
+            } else if case .httpError(let code) = error, code == 401 || code == 403 {
+                // Token rejected (typically expired after sleep) — wait for
+                // Claude Code to refresh it instead of failing silently forever.
+                NSLog("[ClaudePulse] CLI API auth error %d — waiting for token refresh", code)
+                await MainActor.run {
+                    self.isFetching = false
+                    self.handleStaleToken()
                 }
             } else {
                 NSLog("[ClaudePulse] CLI API fetch failed: %@", error.localizedDescription)
@@ -605,38 +650,50 @@ class UsageDataProvider: NSObject, ObservableObject {
         }
     }
 
-    // MARK: - Credentials file watcher
+    /// Token is expired or rejected — surface a clear hint and watch for
+    /// Claude Code rewriting the credentials (file or Keychain).
+    private func handleStaleToken() {
+        fetchError = "Claude Code session expired. It refreshes automatically the next time you use Claude Code."
+        startCredentialsWatcher()
+    }
 
-    /// Watches ~/.claude/.credentials.json for token refresh by Claude Code.
-    /// When the file changes, the new token resets rate limits.
+    // MARK: - Credentials watcher
+
+    /// Watches for Claude Code refreshing its OAuth token. Compares the token
+    /// value itself via CLICredentialsReader, which covers both storage
+    /// locations (~/.claude/.credentials.json and the macOS Keychain — newer
+    /// Claude Code versions use only the Keychain, so file mtime is not enough).
     private func startCredentialsWatcher() {
         guard credentialsWatchTimer == nil else { return }
-        lastKnownCredentialsMod = credentialsFileModDate()
         NSLog("[ClaudePulse] Started credentials watcher")
+
+        // Capture the current token as the baseline (off main — Keychain read spawns a subprocess)
+        Task.detached(priority: .utility) {
+            let json = try? CLICredentialsReader.shared.readCredentials()
+            let token = json.flatMap { CLICredentialsReader.shared.extractAccessToken(from: $0) }
+            await MainActor.run { self.lastKnownAccessToken = token }
+        }
+
         credentialsWatchTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             guard let self else { return }
-            let currentMod = self.credentialsFileModDate()
-            if let known = self.lastKnownCredentialsMod,
-               let current = currentMod,
-               current > known {
-                NSLog("[ClaudePulse] Credentials file changed — token refreshed, retrying")
-                self.lastKnownCredentialsMod = current
-                self.cliBackoffSeconds = 0
-                self.lastCLIFetchDate = nil
-                self.stopCredentialsWatcher()
-                // Re-read credentials off main thread
-                Task.detached(priority: .userInitiated) {
-                    guard let json = try? CLICredentialsReader.shared.readCredentials(),
-                          let token = CLICredentialsReader.shared.extractAccessToken(from: json) else { return }
-                    let plan = CLICredentialsReader.shared.extractSubscriptionType(from: json)?.capitalized ?? "Pro"
-                    await MainActor.run {
-                        self.activeDataSource = .cliAPI(accessToken: token, planName: plan)
-                        self.isFetching = true
-                        Task { await self.fetchUsageViaCLI(accessToken: token, planName: plan) }
-                    }
+            Task.detached(priority: .utility) {
+                guard let json = try? CLICredentialsReader.shared.readCredentials(),
+                      let token = CLICredentialsReader.shared.extractAccessToken(from: json),
+                      !CLICredentialsReader.shared.isTokenExpired(json) else { return }
+                let plan = CLICredentialsReader.shared.extractSubscriptionType(from: json)?.capitalized ?? "Pro"
+
+                await MainActor.run {
+                    guard token != self.lastKnownAccessToken else { return }
+                    NSLog("[ClaudePulse] Credentials changed — token refreshed, retrying")
+                    self.lastKnownAccessToken = token
+                    self.cliBackoffSeconds = 0
+                    self.lastCLIFetchDate = nil
+                    self.fetchError = nil
+                    self.stopCredentialsWatcher()
+                    self.activeDataSource = .cliAPI(accessToken: token, planName: plan)
+                    self.isFetching = true
+                    Task { await self.fetchUsageViaCLI(accessToken: token, planName: plan) }
                 }
-            } else {
-                self.lastKnownCredentialsMod = currentMod
             }
         }
     }
@@ -644,22 +701,6 @@ class UsageDataProvider: NSObject, ObservableObject {
     private func stopCredentialsWatcher() {
         credentialsWatchTimer?.invalidate()
         credentialsWatchTimer = nil
-    }
-
-    private func credentialsFileModDate() -> Date? {
-        let home = ProcessInfo.processInfo.environment["HOME"].map { URL(fileURLWithPath: $0) }
-            ?? FileManager.default.homeDirectoryForCurrentUser
-        let paths = [
-            home.appendingPathComponent(".claude/.credentials.json"),
-            home.appendingPathComponent(".claude/credentials.json")
-        ]
-        for path in paths {
-            if let attrs = try? FileManager.default.attributesOfItem(atPath: path.path),
-               let mod = attrs[.modificationDate] as? Date {
-                return mod
-            }
-        }
-        return nil
     }
 
     // MARK: - CLI response cache
@@ -674,8 +715,10 @@ class UsageDataProvider: NSObject, ObservableObject {
             "weeklyResetTime": usage.weeklyResetTime.timeIntervalSince1970,
             "sonnetPercentage": usage.sonnetPercentage,
             "sonnetResetTime": usage.sonnetResetTime?.timeIntervalSince1970 ?? 0,
+            "sonnetDisplayName": usage.sonnetDisplayName ?? "",
             "designPercentage": usage.designPercentage,
             "designResetTime": usage.designResetTime?.timeIntervalSince1970 ?? 0,
+            "designDisplayName": usage.designDisplayName ?? "",
             "planName": planName,
             "savedAt": Date().timeIntervalSince1970
         ]
@@ -699,11 +742,13 @@ class UsageDataProvider: NSObject, ObservableObject {
                 let ts = cache["sonnetResetTime"] as? TimeInterval ?? 0
                 return ts > 0 ? Date(timeIntervalSince1970: ts) : nil
             }(),
+            sonnetDisplayName: (cache["sonnetDisplayName"] as? String).flatMap { $0.isEmpty ? nil : $0 },
             designPercentage: cache["designPercentage"] as? Double ?? 0,
             designResetTime: {
                 let ts = cache["designResetTime"] as? TimeInterval ?? 0
                 return ts > 0 ? Date(timeIntervalSince1970: ts) : nil
             }(),
+            designDisplayName: (cache["designDisplayName"] as? String).flatMap { $0.isEmpty ? nil : $0 },
             lastUpdated: Date(timeIntervalSince1970: savedAt)
         )
         let planName = cache["planName"] as? String ?? "Pro"
@@ -729,7 +774,7 @@ class UsageDataProvider: NSObject, ObservableObject {
     private func convertToSnapshot(usage: ClaudeUsage, planName: String) -> QuotaSnapshot {
         var snapshot = QuotaSnapshot(
             planName: planName,
-            periodConsumed: Int(usage.weeklyPercentage.rounded()),
+            periodConsumed: Int(usage.effectiveWeeklyPercentage.rounded()),
             periodCapacity: 100,
             windowResetDate: usage.sessionResetTime,
             throttleStatus: "Normal",
@@ -738,15 +783,21 @@ class UsageDataProvider: NSObject, ObservableObject {
         snapshot.windowConsumed = Int(usage.effectiveSessionPercentage.rounded())
         snapshot.windowCapacity = 100
         snapshot.periodResetDate = usage.weeklyResetTime
-        if usage.sonnetPercentage > 0 || usage.sonnetResetTime != nil {
-            snapshot.sonnetConsumed = Int(usage.sonnetPercentage.rounded())
+        if usage.effectiveSonnetPercentage > 0 || usage.sonnetResetTime.map({ $0 > Date() }) == true {
+            snapshot.sonnetConsumed = Int(usage.effectiveSonnetPercentage.rounded())
             snapshot.sonnetCapacity = 100
             snapshot.sonnetResetDate = usage.sonnetResetTime
+            if let name = usage.sonnetDisplayName, !name.isEmpty {
+                snapshot.sonnetTitle = name
+            }
         }
-        if usage.designPercentage > 0 || usage.designResetTime != nil {
-            snapshot.designConsumed = Int(usage.designPercentage.rounded())
+        if usage.effectiveDesignPercentage > 0 || usage.designResetTime.map({ $0 > Date() }) == true {
+            snapshot.designConsumed = Int(usage.effectiveDesignPercentage.rounded())
             snapshot.designCapacity = 100
             snapshot.designResetDate = usage.designResetTime
+            if let name = usage.designDisplayName, !name.isEmpty {
+                snapshot.designTitle = name
+            }
         }
         if let email = CLICredentialsReader.shared.readEmail() {
             snapshot.userEmail = email
@@ -1060,10 +1111,16 @@ class UsageDataProvider: NSObject, ObservableObject {
         if sonnetCapacity > 0 {
             snapshot.sonnetConsumed = sonnetConsumed
             snapshot.sonnetCapacity = sonnetCapacity
+            if let title = j["sonnetTitle"] as? String, !title.isEmpty {
+                snapshot.sonnetTitle = title
+            }
         }
         if designCapacity > 0 {
             snapshot.designConsumed = designConsumed
             snapshot.designCapacity = designCapacity
+            if let title = j["designTitle"] as? String, !title.isEmpty {
+                snapshot.designTitle = title
+            }
         }
         if let rd = windowResetDate { snapshot.windowResetDate = rd }
         if let wd = periodResetDate { snapshot.periodResetDate = wd; snapshot.periodResetText = "" }
@@ -1082,6 +1139,12 @@ class UsageDataProvider: NSObject, ObservableObject {
         snapshot.throttleStatus = throttleStatus
         snapshot.refreshedAt = Date()
         
+        NSLog("[ClaudePulse] DOM parsed: session %d/%d (%@), weekly %d/%d (%@), scoped '%@' %d/%d (%@), design '%@' %d/%d (%@)",
+              windowConsumed, windowCapacity, sessionResetStr,
+              periodConsumed, periodCapacity, weeklyResetStr,
+              j["sonnetTitle"] as? String ?? "", sonnetConsumed, sonnetCapacity, sonnetResetStr,
+              j["designTitle"] as? String ?? "", designConsumed, designCapacity, designResetStr)
+
         currentSnapshot = snapshot
         fetchError      = nil
         requiresAuth    = false

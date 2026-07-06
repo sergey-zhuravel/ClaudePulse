@@ -68,6 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         bindDataProvider()
         launchDataFetch()
         updatePollingLabel()
+        observeWakeFromSleep()
 
         // Start Sparkle updater after UI is ready to avoid blocking first launch
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
@@ -386,6 +387,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pollingTimer?.invalidate()
         pollingTimer = Timer.scheduledTimer(withTimeInterval: pollingInterval, repeats: true) { [weak self] _ in
             self?.dataProvider.reloadData()
+        }
+    }
+
+    /// After sleep the displayed data can be hours old and the OAuth token may
+    /// have expired — refresh right away instead of waiting out the poll interval.
+    private func observeWakeFromSleep() {
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            // Small delay so the network stack is back before we fetch
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                self?.dataProvider.reloadData(manualRefresh: true)
+            }
         }
     }
     

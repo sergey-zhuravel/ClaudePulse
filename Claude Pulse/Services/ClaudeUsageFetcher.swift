@@ -120,7 +120,7 @@ final class ClaudeUsageFetcher {
             throw UsageFetchError.httpError(statusCode: http.statusCode)
         }
 
-        return parseRateLimitHeaders(http)
+        return try parseRateLimitHeaders(http)
     }
 
     // MARK: - Parse JSON (oauth/usage)
@@ -150,6 +150,7 @@ final class ClaudeUsageFetcher {
 
         var sonnetPercentage = 0.0
         var sonnetResetTime: Date? = nil
+        var sonnetDisplayName: String? = nil
         if let sonnet = json["seven_day_sonnet"] as? [String: Any] {
             if let util = sonnet["utilization"] { sonnetPercentage = parseNumber(util) }
             if let resetsAt = sonnet["resets_at"] as? String {
@@ -160,10 +161,48 @@ final class ClaudeUsageFetcher {
         // "omelette" is Anthropic's internal codename for Claude Design
         var designPercentage = 0.0
         var designResetTime: Date? = nil
+        var designDisplayName: String? = nil
         if let design = json["seven_day_omelette"] as? [String: Any] {
             if let util = design["utilization"] { designPercentage = parseNumber(util) }
             if let resetsAt = design["resets_at"] as? String {
                 designResetTime = parseISO8601(resetsAt)
+            }
+        }
+
+        // Newer API shape: authoritative "limits" array with per-scope entries.
+        // Legacy top-level keys (five_hour / seven_day_sonnet / …) may be null,
+        // so entries found here override the legacy values above.
+        if let limits = json["limits"] as? [[String: Any]] {
+            for limit in limits {
+                guard let kind = limit["kind"] as? String else { continue }
+                let percent = limit["percent"].map(parseNumber) ?? 0
+                let resetsAt = (limit["resets_at"] as? String).flatMap(parseISO8601)
+                let scope = limit["scope"] as? [String: Any]
+                let modelName = (scope?["model"] as? [String: Any])?["display_name"] as? String
+                let surfaceName = (scope?["surface"] as? [String: Any])?["display_name"] as? String
+
+                switch kind {
+                case "session":
+                    sessionPercentage = percent
+                    if let r = resetsAt { sessionResetTime = r }
+                case "weekly_all":
+                    weeklyPercentage = percent
+                    if let r = resetsAt { weeklyResetTime = r }
+                case "weekly_scoped":
+                    if let surfaceName {
+                        // Surface-scoped limit (e.g. Claude Design) → design slot
+                        designPercentage = percent
+                        designResetTime = resetsAt
+                        designDisplayName = surfaceName
+                    } else {
+                        // Model-scoped limit (e.g. "Fable", "Sonnet") → sonnet slot
+                        sonnetPercentage = percent
+                        sonnetResetTime = resetsAt
+                        if let modelName { sonnetDisplayName = modelName }
+                    }
+                default:
+                    break
+                }
             }
         }
 
@@ -174,17 +213,26 @@ final class ClaudeUsageFetcher {
             weeklyResetTime: weeklyResetTime,
             sonnetPercentage: sonnetPercentage,
             sonnetResetTime: sonnetResetTime,
+            sonnetDisplayName: sonnetDisplayName,
             designPercentage: designPercentage,
             designResetTime: designResetTime,
+            designDisplayName: designDisplayName,
             lastUpdated: Date()
         )
     }
 
     // MARK: - Parse rate-limit headers (v1/messages)
 
-    private func parseRateLimitHeaders(_ response: HTTPURLResponse) -> ClaudeUsage {
+    private func parseRateLimitHeaders(_ response: HTTPURLResponse) throws -> ClaudeUsage {
         func headerDouble(_ name: String) -> Double? {
             response.value(forHTTPHeaderField: name).flatMap(Double.init)
+        }
+
+        // If the unified rate-limit headers are absent, zeros would silently
+        // overwrite real data downstream — treat as a failed fetch instead.
+        guard headerDouble("anthropic-ratelimit-unified-5h-utilization") != nil
+                || headerDouble("anthropic-ratelimit-unified-7d-utilization") != nil else {
+            throw UsageFetchError.parsingFailed
         }
 
         let sessionUtil = headerDouble("anthropic-ratelimit-unified-5h-utilization") ?? 0

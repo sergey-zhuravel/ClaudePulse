@@ -16,14 +16,30 @@ struct ClaudeUsage {
 
     var sonnetPercentage: Double
     var sonnetResetTime: Date?
+    var sonnetDisplayName: String? = nil
 
     var designPercentage: Double
     var designResetTime: Date?
+    var designDisplayName: String? = nil
 
     var lastUpdated: Date
 
     var effectiveSessionPercentage: Double {
         sessionResetTime < Date() ? 0.0 : sessionPercentage
+    }
+
+    var effectiveWeeklyPercentage: Double {
+        weeklyResetTime < Date() ? 0.0 : weeklyPercentage
+    }
+
+    var effectiveSonnetPercentage: Double {
+        if let reset = sonnetResetTime, reset < Date() { return 0.0 }
+        return sonnetPercentage
+    }
+
+    var effectiveDesignPercentage: Double {
+        if let reset = designResetTime, reset < Date() { return 0.0 }
+        return designPercentage
     }
 }
 

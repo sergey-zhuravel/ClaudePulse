@@ -277,7 +277,7 @@ struct DashboardView: View {
 
                             if snapshot.sonnetCapacity > 0 && snapshot.sonnetFraction > 0 {
                                 quotaBarRow(
-                                    title: "Sonnet only",
+                                    title: snapshot.sonnetTitle,
                                     resetLabel: snapshot.sonnetResetLabel,
                                     consumed: snapshot.sonnetConsumed,
                                     capacity: snapshot.sonnetCapacity,
@@ -287,7 +287,7 @@ struct DashboardView: View {
 
                             if snapshot.designCapacity > 0 && snapshot.designFraction > 0 {
                                 quotaBarRow(
-                                    title: "Claude Design",
+                                    title: snapshot.designTitle,
                                     resetLabel: snapshot.designResetLabel,
                                     consumed: snapshot.designConsumed,
                                     capacity: snapshot.designCapacity,

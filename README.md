@@ -59,7 +59,7 @@ If you don't use Claude Code CLI, a browser window opens on first launch. Log in
 
 ### Data sources
 
-**CLI API mode** — When signed in via Claude Code CLI, the app reads your OAuth token and fetches usage data directly from the Anthropic API (`GET /api/oauth/usage`). The token is validated on each app launch to ensure it's still active. This mode provides session (5h), weekly (all models), and Sonnet-only utilization with exact reset times.
+**CLI API mode** — When signed in via Claude Code CLI, the app reads your OAuth token and fetches usage data directly from the Anthropic API (`GET /api/oauth/usage`). The token is validated on each app launch to ensure it's still active. This mode provides session (5h), weekly (all models), model-scoped (e.g. Sonnet- or Fable-only), and Claude Design utilization with exact reset times. If the token expires (e.g. after the Mac wakes from sleep), the app watches for Claude Code to refresh it and resumes automatically.
 
 **WebView mode** — When signed in via browser, the app embeds a hidden `WKWebView` that loads `claude.ai/settings/usage` using your stored browser session (via `WKWebsiteDataStore.default()` — the same cookie store Safari uses for WebKit-based apps). A JavaScript **fetch/XHR interceptor** is injected at document start, before any page script runs. It captures every API response that mentions usage, limits, or quotas and forwards the raw JSON to Swift. A DOM-text extraction pass runs 5 s after page load as a fallback.
 

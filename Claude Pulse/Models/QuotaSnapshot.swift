@@ -17,14 +17,16 @@ struct QuotaSnapshot {
     var periodResetDate:  Date?     // billing period / weekly reset (from DOM parsed date)
     var windowResetText:  String = "" // raw reset string if absolute format
     var periodResetText:  String = "" // raw weekday+time string e.g. "Fri 10:00 AM"
-    var sonnetConsumed:   Int = 0   // sonnet-only weekly usage (from DOM)
-    var sonnetCapacity:   Int = 0   // sonnet-only weekly limit (from DOM)
-    var sonnetResetDate:  Date?     // sonnet-only reset date
+    var sonnetConsumed:   Int = 0   // model-scoped weekly usage (from DOM)
+    var sonnetCapacity:   Int = 0   // model-scoped weekly limit (from DOM)
+    var sonnetResetDate:  Date?     // model-scoped reset date
     var sonnetResetText:  String = ""
+    var sonnetTitle:      String = "Sonnet only" // row title — API supplies the model name (e.g. "Fable")
     var designConsumed:   Int = 0   // claude design weekly usage
     var designCapacity:   Int = 0   // claude design weekly limit
     var designResetDate:  Date?
     var designResetText:  String = ""
+    var designTitle:      String = "Claude Design"
     var userEmail:        String = ""
     var throttleStatus:   String
     var refreshedAt:      Date
@@ -47,6 +49,9 @@ struct QuotaSnapshot {
     
     var windowFraction: Double {
         guard windowCapacity > 0 else { return 0 }
+        // Once the session window's reset time passes, its usage is 0 by
+        // definition — self-zero instead of showing yesterday's percentage.
+        if let reset = windowResetDate, reset < Date() { return 0 }
         return min(1.0, Double(windowConsumed) / Double(windowCapacity))
     }
     

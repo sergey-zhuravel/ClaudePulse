@@ -6,7 +6,7 @@ Claude Pulse supports two authentication modes to fetch usage data. It does **no
 
 ### Authentication modes
 
-**CLI API mode** — If you use Claude Code CLI (`claude login`), the app reads your existing OAuth token from `~/.claude/.credentials.json` or macOS Keychain. The token is validated against the Anthropic API before use. Usage data is fetched via `GET /api/oauth/usage`.
+**CLI API mode** — If you use Claude Code CLI (`claude login`), the app reads your existing OAuth token from `~/.claude/.credentials.json` or macOS Keychain. The token is validated against the Anthropic API before use. Usage data is fetched via `GET /api/oauth/usage`; only while that endpoint is rate-limited does the app fall back to a minimal `POST /v1/messages` request and read the rate-limit response headers. If the token expires, the app waits for Claude Code to refresh it (checking the credentials file/Keychain periodically) — it never refreshes or modifies the token itself.
 
 **WebView mode** — A hidden `WKWebView` loads `claude.ai/settings/usage` using your stored browser session. A JavaScript interceptor captures API responses containing usage data.
 
