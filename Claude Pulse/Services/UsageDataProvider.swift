@@ -381,11 +381,22 @@ class UsageDataProvider: NSObject, ObservableObject {
             let expired = json.map { CLICredentialsReader.shared.isTokenExpired($0) } ?? true
 
             await MainActor.run {
-                guard let json, let token, !expired else {
+                guard let json, let token else {
                     self.cliAvailable = false
                     self.isFetching = false
                     self.activeDataSource = .webView
                     self.performWebViewFetch()
+                    return
+                }
+
+                guard !expired else {
+                    // CLI-authenticated but the token lapsed while the app was
+                    // closed — refresh it instead of dropping to WebView.
+                    self.cliAvailable = true
+                    let plan = CLICredentialsReader.shared.extractSubscriptionType(from: json)?.capitalized ?? "Pro"
+                    self.activeDataSource = .cliAPI(accessToken: token, planName: plan)
+                    self.isFetching = false
+                    self.refreshExpiredToken(credentialsJSON: json)
                     return
                 }
 
@@ -461,10 +472,14 @@ class UsageDataProvider: NSObject, ObservableObject {
                         return
                     }
                     guard !expired else {
-                        // Don't burn a request on a token the API will reject.
-                        // Claude Code refreshes it on its next run — watch for that.
+                        // Don't burn a request on a token the API will reject —
+                        // refresh it ourselves with the stored refresh token.
                         self.isFetching = false
-                        self.handleStaleToken()
+                        if let json {
+                            self.refreshExpiredToken(credentialsJSON: json)
+                        } else {
+                            self.handleStaleToken()
+                        }
                         return
                     }
                     self.activeDataSource = .cliAPI(accessToken: freshToken, planName: freshPlan)
@@ -474,6 +489,7 @@ class UsageDataProvider: NSObject, ObservableObject {
             }
         case .webView, .none:
             isFetching = true
+            redirectReloadCount = 0
             scheduleFetchTimeout()
             dataWebView.load(URLRequest(url: targetURL))
         }
@@ -536,6 +552,8 @@ class UsageDataProvider: NSObject, ObservableObject {
         lastCLIFetchDate = nil
         oauthCooldownStep = 0
         oauthCooldownUntil = nil
+        isRefreshingToken = false
+        lastTokenRefreshAttempt = nil
         UserDefaults.standard.removeObject(forKey: Self.cliCacheKey)
         UserDefaults.standard.removeObject(forKey: "lastAuthSource")
         UserDefaults.standard.set(true, forKey: "didExplicitlyLogOut")
@@ -627,12 +645,19 @@ class UsageDataProvider: NSObject, ObservableObject {
                     }
                 }
             } else if case .httpError(let code) = error, code == 401 || code == 403 {
-                // Token rejected (typically expired after sleep) — wait for
-                // Claude Code to refresh it instead of failing silently forever.
-                NSLog("[ClaudePulse] CLI API auth error %d — waiting for token refresh", code)
+                // Token rejected (typically expired after sleep) — try to
+                // refresh it ourselves before waiting on Claude Code.
+                NSLog("[ClaudePulse] CLI API auth error %d — attempting token refresh", code)
+                let json = await Task.detached(priority: .userInitiated) {
+                    try? CLICredentialsReader.shared.readCredentials()
+                }.value
                 await MainActor.run {
                     self.isFetching = false
-                    self.handleStaleToken()
+                    if let json, CLICredentialsReader.shared.extractAccessToken(from: json) != nil {
+                        self.refreshExpiredToken(credentialsJSON: json)
+                    } else {
+                        self.handleStaleToken()
+                    }
                 }
             } else {
                 NSLog("[ClaudePulse] CLI API fetch failed: %@", error.localizedDescription)
@@ -655,6 +680,69 @@ class UsageDataProvider: NSObject, ObservableObject {
     private func handleStaleToken() {
         fetchError = "Claude Code session expired. It refreshes automatically the next time you use Claude Code."
         startCredentialsWatcher()
+    }
+
+    // MARK: - OAuth token self-refresh
+
+    private var isRefreshingToken = false
+    private var lastTokenRefreshAttempt: Date?
+    /// Failed refreshes retry no faster than the poll cycle; without this an
+    /// offline morning would hammer the token endpoint every reloadData call.
+    private static let tokenRefreshMinInterval: TimeInterval = 300
+
+    /// Refreshes an expired/rejected OAuth token with the stored refresh token
+    /// and fetches immediately on success. Falls back to the credentials
+    /// watcher (wait for Claude Code) when the refresh isn't possible.
+    private func refreshExpiredToken(credentialsJSON: String) {
+        guard !isRefreshingToken else { return }
+        if let last = lastTokenRefreshAttempt,
+           Date().timeIntervalSince(last) < Self.tokenRefreshMinInterval {
+            handleStaleToken()
+            return
+        }
+        isRefreshingToken = true
+        lastTokenRefreshAttempt = Date()
+        isFetching = true
+
+        Task {
+            do {
+                let updatedJSON = try await OAuthTokenRefresher.shared.refresh(credentialsJSON: credentialsJSON)
+                guard let token = CLICredentialsReader.shared.extractAccessToken(from: updatedJSON) else {
+                    throw TokenRefreshError.malformedResponse
+                }
+                let plan = CLICredentialsReader.shared.extractSubscriptionType(from: updatedJSON)?.capitalized ?? "Pro"
+
+                // Write back off main — the Keychain/file round-trip can block
+                let wroteBack = await Task.detached(priority: .utility) {
+                    CLICredentialsReader.shared.writeCredentials(updatedJSON)
+                }.value
+
+                await MainActor.run {
+                    self.isRefreshingToken = false
+                    if wroteBack {
+                        NSLog("[ClaudePulse] OAuth token self-refreshed and written back")
+                    } else {
+                        // Data stays fresh this session; Claude Code may need
+                        // its own refresh (or re-login if the token rotated).
+                        NSLog("[ClaudePulse] OAuth token refreshed but write-back failed — using in-memory token")
+                    }
+                    // Watcher baseline — our own write must not read as a
+                    // Claude Code refresh and trigger a second fetch.
+                    self.lastKnownAccessToken = token
+                    self.activeDataSource = .cliAPI(accessToken: token, planName: plan)
+                    self.lastCLIFetchDate = Date()
+                    self.fetchError = nil
+                    Task { await self.fetchUsageViaCLI(accessToken: token, planName: plan) }
+                }
+            } catch {
+                await MainActor.run {
+                    self.isRefreshingToken = false
+                    self.isFetching = false
+                    NSLog("[ClaudePulse] Token refresh failed: %@ — waiting for Claude Code", error.localizedDescription)
+                    self.handleStaleToken()
+                }
+            }
+        }
     }
 
     // MARK: - Credentials watcher
@@ -762,6 +850,7 @@ class UsageDataProvider: NSObject, ObservableObject {
             DispatchQueue.main.async {
                 if hasClaude {
                     self.isFetching = true
+                    self.redirectReloadCount = 0
                     self.scheduleFetchTimeout()
                     self.dataWebView.load(URLRequest(url: self.targetURL))
                 } else {
@@ -807,6 +896,12 @@ class UsageDataProvider: NSObject, ObservableObject {
 
     /// Resets `isFetching` and retries once if no response arrives within 15 seconds.
     private var fetchRetryCount = 0
+
+    /// Bounces from intermediate claude.ai pages back to the usage page are
+    /// capped per fetch cycle — an unrecognized redirect target would
+    /// otherwise reload every second forever.
+    private var redirectReloadCount = 0
+    private static let maxRedirectReloads = 3
 
     private func scheduleFetchTimeout() {
         fetchTimeoutWork?.cancel()
@@ -1237,10 +1332,21 @@ extension UsageDataProvider: WKNavigationDelegate {
             if s.contains("/login") || s.contains("/auth") || s.contains("?next=") {
                 DispatchQueue.main.async { self.isFetching = false; self.cancelFetchTimeout(); self.requiresAuth = true; self.currentSnapshot = nil }
             } else if s.contains("settings/usage") {
+                redirectReloadCount = 0
                 executeDOMParsing()
             } else if s.contains("claude.ai") {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                    self.dataWebView.load(URLRequest(url: self.targetURL))
+                if redirectReloadCount < Self.maxRedirectReloads {
+                    redirectReloadCount += 1
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                        self.dataWebView.load(URLRequest(url: self.targetURL))
+                    }
+                } else {
+                    NSLog("[ClaudePulse] Redirect loop at %@ — giving up", s)
+                    DispatchQueue.main.async {
+                        self.isFetching = false
+                        self.cancelFetchTimeout()
+                        self.fetchError = "Could not load usage data. Try refreshing manually."
+                    }
                 }
             } else {
                 // Unexpected URL — don't leave isFetching stuck
@@ -1266,6 +1372,27 @@ extension UsageDataProvider: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFailProvisionalNavigation nav: WKNavigation!, withError error: Error) {
         if webView === dataWebView {
             DispatchQueue.main.async { self.isFetching = false; self.cancelFetchTimeout(); self.fetchError = error.localizedDescription }
+        }
+    }
+
+    // The system reclaims long-idle web content processes; without this
+    // handler an in-flight fetch never gets its navigation callbacks and
+    // the spinner stays on until the timeout — or forever if none is armed.
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        guard webView === dataWebView else { return }
+        if case .cliAPI = activeDataSource { return }
+        NSLog("[ClaudePulse] WebView content process terminated (retry %d)", fetchRetryCount)
+        guard isFetching else { return }
+        if fetchRetryCount < 2 {
+            // load() respawns the content process; reuse the timeout's retry
+            // counter so repeated terminations can't reload endlessly.
+            fetchRetryCount += 1
+            scheduleFetchTimeout()
+            dataWebView.load(URLRequest(url: targetURL))
+        } else {
+            isFetching = false
+            cancelFetchTimeout()
+            fetchError = "Could not load usage data. Try refreshing manually."
         }
     }
 }

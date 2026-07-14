@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import Security
 
 final class CLICredentialsReader {
 
@@ -121,13 +122,15 @@ final class CLICredentialsReader {
         return home.appendingPathComponent(".claude")
     }
 
-    private func readCredentialsFile() -> String? {
-        let paths = [
+    private var credentialsFilePaths: [URL] {
+        [
             claudeDirectory.appendingPathComponent(".credentials.json"),
             claudeDirectory.appendingPathComponent("credentials.json")
         ]
+    }
 
-        for fileURL in paths {
+    private func readCredentialsFile() -> String? {
+        for fileURL in credentialsFilePaths {
             guard FileManager.default.fileExists(atPath: fileURL.path),
                   let data = try? Data(contentsOf: fileURL),
                   let jsonString = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -138,6 +141,44 @@ final class CLICredentialsReader {
             return jsonString
         }
         return nil
+    }
+
+    // MARK: - Writing credentials back
+
+    /// Writes refreshed credentials to the same store the read chain uses:
+    /// the credentials file when one exists, otherwise the Keychain item.
+    /// Keeping Claude Code's store current is what prevents a rotated refresh
+    /// token from silently logging the CLI out.
+    func writeCredentials(_ json: String) -> Bool {
+        for fileURL in credentialsFilePaths where FileManager.default.fileExists(atPath: fileURL.path) {
+            do {
+                try json.write(to: fileURL, atomically: true, encoding: .utf8)
+                try? FileManager.default.setAttributes(
+                    [.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+                return true
+            } catch {
+                NSLog("[ClaudePulse] Credentials file write failed: %@", error.localizedDescription)
+                return false
+            }
+        }
+        return writeKeychainCredentials(json)
+    }
+
+    /// SecItemUpdate rather than the `security` CLI: the JSON contains live
+    /// tokens and must not appear in a subprocess argv visible to `ps`.
+    private func writeKeychainCredentials(_ json: String) -> Bool {
+        guard let data = json.data(using: .utf8) else { return false }
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: resolveServiceName(),
+            kSecAttrAccount as String: NSUserName()
+        ]
+        let update: [String: Any] = [kSecValueData as String: data]
+        let status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
+        if status != errSecSuccess {
+            NSLog("[ClaudePulse] Keychain credentials update failed (status: %d)", status)
+        }
+        return status == errSecSuccess
     }
 
     // MARK: - Keychain credentials (via /usr/bin/security CLI)

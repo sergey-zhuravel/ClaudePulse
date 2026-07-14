@@ -90,11 +90,15 @@ struct DashboardView: View {
             if dataProvider.requiresAuth {
                 signInPrompt
             } else if dataProvider.currentSnapshot == nil {
-                loadingPlaceholder
-            } else if let msg = dataProvider.fetchError, dataProvider.currentSnapshot == nil {
-                failureView(msg)
+                if let msg = dataProvider.fetchError, !dataProvider.isFetching {
+                    failureView(msg)
+                } else {
+                    loadingPlaceholder
+                }
             } else {
-                if let snapshot = dataProvider.currentSnapshot, snapshot.isOutdated {
+                if let msg = dataProvider.fetchError {
+                    errorBanner(msg)
+                } else if let snapshot = dataProvider.currentSnapshot, snapshot.isOutdated {
                     outdatedBanner
                 }
                 hintsSection
@@ -189,6 +193,30 @@ struct DashboardView: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
     
+    /// Shown above stale data when fetching fails — explains *why* the
+    /// numbers below aren't moving instead of a bare "may be outdated".
+    private func errorBanner(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .font(.system(size: 12))
+            Text(message)
+                .font(.system(size: 11))
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+            Button("Retry") { dataProvider.reloadData(manualRefresh: true) }
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.orange)
+                .buttonStyle(.plain)
+                .focusable(false)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Color.orange.opacity(0.10))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
     // MARK: - Loading / error states
     
     private var loadingPlaceholder: some View {

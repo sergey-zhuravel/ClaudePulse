@@ -6,13 +6,13 @@ Claude Pulse supports two authentication modes to fetch usage data. It does **no
 
 ### Authentication modes
 
-**CLI API mode** — If you use Claude Code CLI (`claude login`), the app reads your existing OAuth token from `~/.claude/.credentials.json` or macOS Keychain. The token is validated against the Anthropic API before use. Usage data is fetched via `GET /api/oauth/usage`; only while that endpoint is rate-limited does the app fall back to a minimal `POST /v1/messages` request and read the rate-limit response headers. If the token expires, the app waits for Claude Code to refresh it (checking the credentials file/Keychain periodically) — it never refreshes or modifies the token itself.
+**CLI API mode** — If you use Claude Code CLI (`claude login`), the app reads your existing OAuth token from `~/.claude/.credentials.json` or macOS Keychain. The token is validated against the Anthropic API before use. Usage data is fetched via `GET /api/oauth/usage`; only while that endpoint is rate-limited does the app fall back to a minimal `POST /v1/messages` request and read the rate-limit response headers. If the token expires, the app refreshes it itself using the stored OAuth refresh token (the same `platform.claude.com/v1/oauth/token` flow Claude Code uses) and writes the updated credentials back to the original store (credentials file or Keychain) so Claude Code stays logged in. If the refresh fails, the app falls back to waiting for Claude Code to refresh the token (checking the credentials file/Keychain periodically).
 
 **WebView mode** — A hidden `WKWebView` loads `claude.ai/settings/usage` using your stored browser session. A JavaScript interceptor captures API responses containing usage data.
 
 ### What the app accesses
 
-- **Claude Code CLI credentials** (CLI mode) — OAuth token read. The token is kept in memory only and never written to disk by the app.
+- **Claude Code CLI credentials** (CLI mode) — OAuth token read; the access token is kept in memory for API calls. When the token expires, the app performs an OAuth refresh and writes the updated credentials back to their original location (credentials file or Keychain item) — only the token fields are replaced, everything else is preserved. The write uses the Security framework directly, so credentials never pass through subprocess arguments.
 - **`~/.claude.json`** (CLI mode) — Read-only access to extract the account email address for display. No data is modified.
 - **claude.ai cookies** (WebView mode) — stored in the system's default `WKWebsiteDataStore`, used to authenticate with Claude. Never read or exported by the app.
 - **Usage data** — utilization percentages, limits, and reset times for session (5h), weekly, Sonnet-only, and Claude Design quotas, plus plan type. Kept in memory only.
@@ -20,9 +20,9 @@ Claude Pulse supports two authentication modes to fetch usage data. It does **no
 
 ### What the app does NOT do
 
-- Does not store or persist credentials or tokens to disk
-- Does not modify CLI credentials, Keychain entries, or any Claude Code configuration files
-- Does not send data to any server other than `api.anthropic.com`, `claude.ai`, and GitHub (for update checks)
+- Does not store or persist credentials or tokens to disk (the only write is the refreshed OAuth credentials going back into Claude Code's own store)
+- Does not modify any Claude Code configuration other than the OAuth token fields during a refresh
+- Does not send data to any server other than `api.anthropic.com`, `platform.claude.com` (OAuth token refresh), `claude.ai`, and GitHub (for update checks)
 - Does not log or persist usage data to disk
 - Does not access any Claude conversations or message content
 - Does not modify any data on claude.ai
@@ -32,6 +32,7 @@ Claude Pulse supports two authentication modes to fetch usage data. It does **no
 | Destination | Purpose |
 |-------------|---------|
 | `api.anthropic.com` | Fetch usage data via OAuth API (CLI mode) |
+| `platform.claude.com` | OAuth token refresh when the access token expires (CLI mode) |
 | `claude.ai` | Load usage settings page, authenticate (WebView mode) |
 | `raw.githubusercontent.com` | Check for app updates (Sparkle appcast) |
 | `github.com` | Download app updates (DMG from releases) |
