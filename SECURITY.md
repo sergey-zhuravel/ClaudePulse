@@ -12,7 +12,7 @@ Claude Pulse supports two authentication modes to fetch usage data. It does **no
 
 ### What the app accesses
 
-- **Claude Code CLI credentials** (CLI mode) — OAuth token read; the access token is kept in memory for API calls. When the token expires, the app performs an OAuth refresh and writes the updated credentials back to their original location (credentials file or Keychain item) — only the token fields are replaced, everything else is preserved. The write uses the Security framework directly, so credentials never pass through subprocess arguments.
+- **Claude Code CLI credentials** (CLI mode) — OAuth token read; the access token is kept in memory for API calls. When the token expires, the app performs an OAuth refresh and writes the updated credentials back to their original location (credentials file or Keychain item) — only the token fields are replaced, everything else is preserved. All Keychain access (read and write) uses the Security framework directly (`SecItemCopyMatching` / `SecItemUpdate`) — no subprocesses, so credentials never appear in process arguments or pipe buffers. Because the Keychain item belongs to Claude Code, macOS shows a one-time access prompt naming Claude Pulse; choosing "Always Allow" grants persistent access tied to the app's code signature.
 - **`~/.claude.json`** (CLI mode) — Read-only access to extract the account email address for display. No data is modified.
 - **claude.ai cookies** (WebView mode) — stored in the system's default `WKWebsiteDataStore`, used to authenticate with Claude. Never read or exported by the app.
 - **Usage data** — utilization percentages, limits, and reset times for session (5h), weekly, Sonnet-only, and Claude Design quotas, plus plan type. Kept in memory only.

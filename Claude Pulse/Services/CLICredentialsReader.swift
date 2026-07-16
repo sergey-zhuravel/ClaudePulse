@@ -39,7 +39,7 @@ final class CLICredentialsReader {
             return raw
         }
 
-        // 4. Truncated Keychain data — regex fallback
+        // 4. Malformed Keychain data — regex fallback
         if let token = extractAccessTokenViaRegex(from: raw) {
             return "{\"claudeAiOauth\":{\"accessToken\":\"\(token)\"}}"
         }
@@ -164,8 +164,6 @@ final class CLICredentialsReader {
         return writeKeychainCredentials(json)
     }
 
-    /// SecItemUpdate rather than the `security` CLI: the JSON contains live
-    /// tokens and must not appear in a subprocess argv visible to `ps`.
     private func writeKeychainCredentials(_ json: String) -> Bool {
         guard let data = json.data(using: .utf8) else { return false }
         let query: [String: Any] = [
@@ -181,51 +179,37 @@ final class CLICredentialsReader {
         return status == errSecSuccess
     }
 
-    // MARK: - Keychain credentials (via /usr/bin/security CLI)
+    // MARK: - Keychain credentials (SecItemCopyMatching)
 
-    /// Runs a Process with a timeout. Returns false if timed out (process is killed).
-    private func runWithTimeout(_ process: Process, timeout: TimeInterval = 10) -> Bool {
-        let semaphore = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in semaphore.signal() }
-
-        do {
-            try process.run()
-        } catch {
-            return false
-        }
-
-        let result = semaphore.wait(timeout: .now() + timeout)
-        if result == .timedOut {
-            process.terminate()
-            NSLog("[ClaudePulse] Process timed out: %@", process.arguments?.joined(separator: " ") ?? "")
-            return false
-        }
-        return true
-    }
-
+    /// `kSecUseDataProtectionKeychain` is deliberately absent from every query
+    /// in this file: Claude Code stores its item in the legacy login (file-based)
+    /// keychain, and the data-protection keychain cannot see it (TN3137).
+    /// Reading the secret prompts the user for ACL approval on the app's behalf;
+    /// "Always Allow" then sticks to Claude Pulse's code signature.
     private func readKeychainCredentials() throws -> String? {
-        let serviceName = resolveServiceName()
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        process.arguments = ["find-generic-password", "-s", serviceName, "-a", NSUserName(), "-w"]
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: resolveServiceName(),
+            kSecAttrAccount as String: NSUserName(),
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
 
-        let outputPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = Pipe()
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
 
-        guard runWithTimeout(process) else {
-            NSLog("[ClaudePulse] Keychain read timed out")
-            return nil
-        }
-
-        switch process.terminationStatus {
-        case 0:
-            let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        switch status {
+        case errSecSuccess:
+            guard let data = result as? Data else { return nil }
             return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        case 44:
-            return nil // item not found
+        case errSecItemNotFound:
+            return nil
+        case errSecAuthFailed, errSecInteractionNotAllowed:
+            // User denied the ACL prompt (or no UI session) — treat as unreadable, not fatal
+            NSLog("[ClaudePulse] Keychain access denied (status: %d)", status)
+            return nil
         default:
-            throw CLICredentialsError.keychainReadFailed(status: OSStatus(process.terminationStatus))
+            throw CLICredentialsError.keychainReadFailed(status: status)
         }
     }
 
@@ -260,39 +244,37 @@ final class CLICredentialsReader {
         return Self.legacyServiceName
     }
 
+    /// Attribute-only queries don't touch the secret, so they never trigger
+    /// the keychain ACL prompt.
     private func keychainItemExists(serviceName: String) -> Bool {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        process.arguments = ["find-generic-password", "-s", serviceName, "-a", NSUserName()]
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
-        guard runWithTimeout(process) else { return false }
-        return process.terminationStatus == 0
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceName,
+            kSecAttrAccount as String: NSUserName(),
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
     }
 
     private func findHashedServiceName() -> String? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        process.arguments = ["dump-keychain"]
-        let outputPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = Pipe()
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll
+        ]
 
-        guard runWithTimeout(process, timeout: 5) else {
-            NSLog("[ClaudePulse] dump-keychain timed out")
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let items = result as? [[String: Any]] else {
             return nil
         }
-        guard process.terminationStatus == 0 else { return nil }
 
-        let output = String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         let prefix = "Claude Code-credentials-"
-
-        for line in output.components(separatedBy: "\n") {
-            guard line.contains("\"svce\""), line.contains(prefix),
-                  let eq = line.range(of: "=\""),
-                  let endQ = line.range(of: "\"", range: eq.upperBound..<line.endIndex) else { continue }
-            let name = String(line[eq.upperBound..<endQ.lowerBound])
-            if name.hasPrefix(prefix) { return name }
+        for item in items {
+            if let service = item[kSecAttrService as String] as? String, service.hasPrefix(prefix) {
+                return service
+            }
         }
         return nil
     }
